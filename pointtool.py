@@ -129,6 +129,12 @@ class PointTool(QgsMapToolEdit):
         self.vlayer = None
         self.grid = None
         self.sample = None
+        self.raster_sampler = None
+        self.window_origin = None
+        self.window_shape = None
+        self.window_padding = 1024
+        self.min_window_size = 512
+        self.trace_color_value = None
 
         self.tracking_is_active = False
 
@@ -187,34 +193,238 @@ class PointTool(QgsMapToolEdit):
         #     self.marker_snap.show()
 
     def trace_color_changed(self, color):
-        r, g, b = self.sample
+        if color is False:
+            self.trace_color_value = None
+        else:
+            r0, g0, b0, _ = color.getRgb()
+            self.trace_color_value = (float(r0), float(g0), float(b0))
+
+        self._recompute_trace_grid(reason="manual")
+
+    def _ensure_sampler(self):
+        if self.raster_sampler is None and self.rlayer is not None:
+            try:
+                sampler = get_whole_raster(
+                    self.rlayer,
+                    QgsProject.instance(),
+                )
+            except PossiblyIndexedImageError:
+                self.display_message(
+                    "Missing Layer",
+                    "Can't trace indexed or gray image",
+                    level='Critical',
+                    duration=2,
+                    )
+                self.raster_sampler = None
+            else:
+                self.raster_sampler = sampler
+                self.to_indexes = self.raster_sampler.to_indexes
+                self.to_coords = self.raster_sampler.to_coords
+                self.to_coords_provider = self.raster_sampler.to_coords_provider
+                self.to_coords_provider2 = self.raster_sampler.to_coords_provider2
+                self.sample = None
+                self.grid = None
+                self.grid_changed = None
+                self.window_origin = None
+                self.window_shape = None
+                self._recompute_trace_grid(reason="lazy-load")
+
+    def _indices_inside_window(self, index):
+        if self.window_origin is None or self.window_shape is None:
+            return False
+        origin_i, origin_j = self.window_origin
+        height, width = self.window_shape
+        i, j = index
+        return (
+            origin_i <= i < origin_i + height and
+            origin_j <= j < origin_j + width
+        )
+
+    def _compute_window_bounds(self, indices, padding):
+        if self.raster_sampler is None:
+            return None
+
+        height = self.raster_sampler.height
+        width = self.raster_sampler.width
+
+        clamped_i = []
+        clamped_j = []
+        for i, j in indices:
+            clamped_i.append(max(0, min(int(i), height - 1)))
+            clamped_j.append(max(0, min(int(j), width - 1)))
+
+        if not clamped_i or not clamped_j:
+            return None
+
+        min_i = min(clamped_i)
+        max_i = max(clamped_i)
+        min_j = min(clamped_j)
+        max_j = max(clamped_j)
+
+        target_padding = max(int(padding), 0)
+
+        i_min = max(0, min_i - target_padding)
+        i_max = min(height, max_i + target_padding + 1)
+        j_min = max(0, min_j - target_padding)
+        j_max = min(width, max_j + target_padding + 1)
+
+        min_height = min(self.min_window_size, height)
+        min_width = min(self.min_window_size, width)
+
+        current_height = i_max - i_min
+        if current_height < min_height:
+            needed = min_height - current_height
+            extend_top = min(i_min, needed // 2)
+            extend_bottom = min(height - i_max, needed - extend_top)
+            i_min -= extend_top
+            i_max += extend_bottom
+            i_min = max(0, i_min)
+            i_max = min(height, i_max)
+
+        current_width = j_max - j_min
+        if current_width < min_width:
+            needed = min_width - current_width
+            extend_left = min(j_min, needed // 2)
+            extend_right = min(width - j_max, needed - extend_left)
+            j_min -= extend_left
+            j_max += extend_right
+            j_min = max(0, j_min)
+            j_max = min(width, j_max)
+
+        return int(i_min), int(i_max), int(j_min), int(j_max)
+
+    def _load_window(self, bounds, reason):
+        if bounds is None or self.raster_sampler is None:
+            return
+
+        i_min, i_max, j_min, j_max = bounds
+        load_start = time.perf_counter() if PROFILE_ENABLED else None
+
+        bands, origin, shape = self.raster_sampler.read_window(
+            i_min,
+            i_max,
+            j_min,
+            j_max,
+        )
+
+        if bands is None or shape == (0, 0):
+            return
+
+        prep_start = time.perf_counter() if PROFILE_ENABLED else None
+        cleaned_bands = []
+        for band in bands:
+            cleaned = np.nan_to_num(band, copy=False)
+            cleaned_bands.append(cleaned)
+        prep_duration = (
+            time.perf_counter() - prep_start
+        ) if PROFILE_ENABLED else None
+
+        grid_start = time.perf_counter() if PROFILE_ENABLED else None
+        grid = cleaned_bands[0] + cleaned_bands[1] + cleaned_bands[2]
+        grid_duration = (
+            time.perf_counter() - grid_start
+        ) if PROFILE_ENABLED else None
+
+        self.sample = tuple(cleaned_bands)
+        self.grid = grid
+        self.window_origin = origin
+        self.window_shape = shape
+        self.grid_changed = None
+
+        total_duration = (
+            time.perf_counter() - load_start
+        ) if PROFILE_ENABLED else None
+
+        if PROFILE_ENABLED:
+            color_bytes = sum(arr.nbytes for arr in self.sample)
+            grid_bytes = self.grid.nbytes if isinstance(self.grid, np.ndarray) else 0
+
+            def _fmt(value):
+                return f"{value:.2f}s" if value is not None else "n/a"
+
+            QgsMessageLog.logMessage(
+                (
+                    "[profiling] window_prepare "
+                    f"reason={reason} origin={origin} shape={shape} "
+                    f"prep={_fmt(prep_duration)} grid_sum={_fmt(grid_duration)} "
+                    f"total={_fmt(total_duration)} color_mb={(color_bytes / (1024 ** 2)):.1f} "
+                    f"grid_mb={(grid_bytes / (1024 ** 2)):.1f}"
+                ),
+                "RasterTracer",
+                Qgis.Info,
+            )
+
+        self._recompute_trace_grid(reason=f"window:{reason}")
+
+    def _ensure_window_for_indices(self, indices, reason, padding=None):
+        if not indices:
+            return
+
+        self._ensure_sampler()
+        if self.raster_sampler is None:
+            return
+
+        if padding is None:
+            padding = self.window_padding
+
+        if all(self._indices_inside_window(index) for index in indices):
+            return
+
+        bounds = self._compute_window_bounds(indices, padding)
+        self._load_window(bounds, reason)
+
+    def _to_local_indices(self, i, j):
+        if self.window_origin is None:
+            raise OutsideMapError
+        origin_i, origin_j = self.window_origin
+        local_i = i - origin_i
+        local_j = j - origin_j
+        if (
+            local_i < 0 or local_j < 0 or
+            self.window_shape is None or
+            local_i >= self.window_shape[0] or
+            local_j >= self.window_shape[1]
+        ):
+            raise OutsideMapError
+        return local_i, local_j
+
+    def _recompute_trace_grid(self, reason):
+        if not PROFILE_ENABLED and self.sample is None and self.trace_color_value is None:
+            # fast path to avoid work when nothing is ready and profiling off
+            self.grid_changed = None
+            return
 
         start_time = time.perf_counter() if PROFILE_ENABLED else None
         diff_duration = None
-        if color is False:
+
+        if self.sample is None:
             self.grid_changed = None
+            state = "no-sample"
+        elif self.trace_color_value is None:
+            self.grid_changed = None
+            state = "cleared"
         else:
             compute_start = time.perf_counter() if PROFILE_ENABLED else None
-            r0, g0, b0, t = color.getRgb()
+            r, g, b = self.sample
+            r0, g0, b0 = self.trace_color_value
             self.grid_changed = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 +
                                        (b0 - b) ** 2)
             if PROFILE_ENABLED:
                 diff_duration = time.perf_counter() - compute_start
+            state = "computed"
 
         if PROFILE_ENABLED:
-            total_duration = time.perf_counter() - start_time
-            result_state = "cleared" if color is False else "computed"
+            total_duration = time.perf_counter() - start_time if start_time is not None else None
+            diff_text = f"{diff_duration:.2f}s" if diff_duration is not None else "n/a"
+            total_text = f"{total_duration:.2f}s" if total_duration is not None else "n/a"
             grid_changed_bytes = (
-                self.grid_changed.nbytes if self.grid_changed is not None else 0
-            )
-            diff_text = (
-                f"{diff_duration:.2f}s" if diff_duration is not None else "n/a"
+                self.grid_changed.nbytes if isinstance(self.grid_changed, np.ndarray) else 0
             )
             QgsMessageLog.logMessage(
                 (
                     "[profiling] trace_color_changed "
-                    f"state={result_state} diff={diff_text}"
-                    f" total={total_duration:.2f}s grid_changed_mb="
+                    f"state={state} reason={reason} diff={diff_text} "
+                    f"total={total_text} grid_changed_mb="
                     f"{(grid_changed_bytes / (1024 ** 2)):.1f}"
                 ),
                 "RasterTracer",
@@ -271,16 +481,12 @@ class PointTool(QgsMapToolEdit):
             return
 
         total_start = time.perf_counter() if PROFILE_ENABLED else None
-        load_call_start = time.perf_counter() if PROFILE_ENABLED else None
-        load_duration = None
+
         try:
-            sample, to_indexes, to_coords, to_coords_provider, \
-                to_coords_provider2 = \
-                get_whole_raster(self.rlayer,
-                                 QgsProject.instance(),
-                                 )
-            if PROFILE_ENABLED:
-                load_duration = time.perf_counter() - load_call_start
+            self.raster_sampler = get_whole_raster(
+                self.rlayer,
+                QgsProject.instance(),
+            )
         except PossiblyIndexedImageError:
             self.display_message(
                 "Missing Layer",
@@ -288,46 +494,38 @@ class PointTool(QgsMapToolEdit):
                 level='Critical',
                 duration=2,
                 )
+            self.raster_sampler = None
+            self.sample = None
+            self.grid = None
+            self.grid_changed = None
+            self.window_origin = None
+            self.window_shape = None
             return
 
-        conversion_start = time.perf_counter() if PROFILE_ENABLED else None
-        r = sample[0].astype(float)
-        g = sample[1].astype(float)
-        b = sample[2].astype(float)
-        where_are_NaNs = np.isnan(r)
-        r[where_are_NaNs] = 0
-        where_are_NaNs = np.isnan(g)
-        g[where_are_NaNs] = 0
-        where_are_NaNs = np.isnan(b)
-        b[where_are_NaNs] = 0
-        conversion_duration = (
-            time.perf_counter() - conversion_start
-        ) if PROFILE_ENABLED else None
+        self.to_indexes = self.raster_sampler.to_indexes
+        self.to_coords = self.raster_sampler.to_coords
+        self.to_coords_provider = self.raster_sampler.to_coords_provider
+        self.to_coords_provider2 = self.raster_sampler.to_coords_provider2
 
-        grid_start = time.perf_counter() if PROFILE_ENABLED else None
-        self.sample = (r, g, b)
-        self.grid = r + g + b
-        grid_duration = (
-            time.perf_counter() - grid_start
-        ) if PROFILE_ENABLED else None
-        self.to_indexes = to_indexes
-        self.to_coords = to_coords
-        self.to_coords_provider = to_coords_provider
-        self.to_coords_provider2 = to_coords_provider2
+        self.sample = None
+        self.grid = None
+        self.grid_changed = None
+        self.window_origin = None
+        self.window_shape = None
+
+        self._recompute_trace_grid(reason="raster-change")
 
         if PROFILE_ENABLED:
-            total_duration = time.perf_counter() - total_start
-            pre_duration = load_call_start - total_start
-            color_bytes = r.nbytes + g.nbytes + b.nbytes
-            grid_bytes = self.grid.nbytes if hasattr(self, "grid") else 0
+            total_duration = time.perf_counter() - total_start if total_start is not None else None
+            total_text = f"{total_duration:.2f}s" if total_duration is not None else "n/a"
+            raster_size = (
+                self.raster_sampler.height if self.raster_sampler else 0,
+                self.raster_sampler.width if self.raster_sampler else 0,
+            )
             QgsMessageLog.logMessage(
                 (
-                    "[profiling] raster_layer_has_changed shape="
-                    f"{r.shape} load_call={load_duration:.2f}s pre_call={pre_duration:.2f}s"
-                    f" convert_cleanup={conversion_duration:.2f}s"
-                    f" grid_sum={grid_duration:.2f}s total={total_duration:.2f}s"
-                    f" color_mb={(color_bytes / (1024 ** 2)):.1f}"
-                    f" grid_mb={(grid_bytes / (1024 ** 2)):.1f}"
+                    "[profiling] raster_layer_has_changed "
+                    f"size={raster_size} total={total_text}"
                 ),
                 "RasterTracer",
                 Qgis.Info,
@@ -401,27 +599,53 @@ class PointTool(QgsMapToolEdit):
         i0, j0 = start
         i1, j1 = goal
 
-        r, g, b, = self.sample
+        self._ensure_window_for_indices([start, goal], reason="trace")
+
+        if self.sample is None or self.grid is None:
+            raise OutsideMapError
 
         try:
-            r0 = r[i1, j1]
-            g0 = g[i1, j1]
-            b0 = b[i1, j1]
+            local_start = self._to_local_indices(i0, j0)
+            local_goal = self._to_local_indices(i1, j1)
+        except OutsideMapError:
+            # try again with a larger window
+            self._ensure_window_for_indices(
+                [start, goal],
+                reason="trace-grow",
+                padding=self.window_padding * 2,
+            )
+            local_start = self._to_local_indices(i0, j0)
+            local_goal = self._to_local_indices(i1, j1)
+
+        r, g, b = self.sample
+
+        try:
+            r0 = r[local_goal]
+            g0 = g[local_goal]
+            b0 = b[local_goal]
         except IndexError:
             raise OutsideMapError
 
         if self.grid_changed is None:
-            grid = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 + (b0 - b) ** 2)
+            grid_to_use = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 + (b0 - b) ** 2)
         else:
-            grid = self.grid_changed
+            grid_to_use = self.grid_changed
+
+        grid_for_path = grid_to_use.astype(np.dtype('l'))
+        origin_i, origin_j = self.window_origin
 
         if do_it_as_task:
             # dirty hack to avoid QGIS crashing
             self.find_path_task = FindPathTask(
-                grid.astype(np.dtype('l')),
-                start,
-                goal,
-                self.draw_path,
+                grid_for_path,
+                local_start,
+                local_goal,
+                lambda path, layer: self._task_path_callback(
+                    path,
+                    layer,
+                    origin_i,
+                    origin_j,
+                ),
                 vlayer,
                 )
 
@@ -431,11 +655,19 @@ class PointTool(QgsMapToolEdit):
             self.tracking_is_active = True
         else:
             path, cost = FindPathFunction(
-                grid.astype(np.dtype('l')),
-                (i0, j0),
-                (i1, j1),
+                grid_for_path,
+                local_start,
+                local_goal,
                 )
-            return path, cost
+            global_path = [
+                (i + origin_i, j + origin_j) for i, j in path
+            ]
+            return global_path, cost
+
+    def _task_path_callback(self, path, vlayer, origin_i, origin_j):
+        if path is not None:
+            path = [(i + origin_i, j + origin_j) for i, j in path]
+        self.draw_path(path, vlayer)
 
     def trace(self, x1, y1, i1, j1, vlayer):
         '''
@@ -493,30 +725,42 @@ class PointTool(QgsMapToolEdit):
         if self.grid_changed is None:
             return i, j
 
+        self._ensure_window_for_indices([(i, j)], reason="snap")
+
+        if self.grid_changed is None:
+            return i, j
+
+        local_i, local_j = self._to_local_indices(i, j)
+
         size_i, size_j = self.grid.shape
         size = self.snap_tolerance
 
-        if i < size or j < size or i + size > size_i or j + size > size_j:
+        if (
+            local_i < size or
+            local_j < size or
+            local_i + size > size_i or
+            local_j + size > size_j
+        ):
             raise OutsideMapError
 
-        grid_small = self.grid_changed
-        grid_small = grid_small[i - size: i + size, j - size: j + size]
+        grid_small = self.grid_changed[
+            local_i - size: local_i + size,
+            local_j - size: local_j + size,
+        ]
 
         smallest_cells = np.where(grid_small == np.amin(grid_small))
         coordinates = list(zip(smallest_cells[0], smallest_cells[1]))
 
-        if len(coordinates) == 1:
-            delta_i, delta_j = coordinates[0]
-            delta_i -= size
-            delta_j -= size
-        else:
-            # find the closest to the center
-            deltas = [(i - size, j - size) for i, j in coordinates]
-            lengths = [(i ** 2 + j ** 2) for i, j in deltas]
-            i = lengths.index(min(lengths))
-            delta_i, delta_j = deltas[i]
+        offsets = [(ci - size, cj - size) for ci, cj in coordinates]
 
-        return i+delta_i, j+delta_j
+        if len(offsets) == 1:
+            offset_i, offset_j = offsets[0]
+        else:
+            lengths = [(di ** 2 + dj ** 2) for di, dj in offsets]
+            best_index = lengths.index(min(lengths))
+            offset_i, offset_j = offsets[best_index]
+
+        return i + offset_i, j + offset_j
 
     def canvasReleaseEvent(self, mouseEvent):
         '''
@@ -745,4 +989,3 @@ def add_feature_to_vlayer(vlayer, points):
     polyline = [QgsPoint(x, y) for x, y in points]
     feat.setGeometry(QgsGeometry.fromPolyline(polyline))
     vlayer.addFeature(feat)
-
