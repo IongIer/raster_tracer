@@ -32,6 +32,14 @@ Anchor = namedtuple('Anchor', ['x', 'y', 'i', 'j'])
 # Flag for experimental Autofollowing mode
 ALLOW_AUTO_FOLLOWING = False
 
+SHORTCUT_KEYS = {
+    Qt.Key_A,
+    Qt.Key_B,
+    Qt.Key_Backspace,
+    Qt.Key_S,
+    Qt.Key_Escape,
+}
+
 PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
 
 
@@ -744,6 +752,12 @@ class PointTool(QgsMapToolEdit):
         marker = QgsVertexMarker(self.canvas())
         marker.setCenter(QgsPointXY(x1, y1))
         self.markers.append(marker)
+
+    def handled_shortcut_keys(self):
+        return SHORTCUT_KEYS
+
+    def has_active_trace(self):
+        return bool(self.anchors) or self.tracking_is_active
 
     def _anchor_indices(self, anchor):
         if hasattr(anchor, 'i'):

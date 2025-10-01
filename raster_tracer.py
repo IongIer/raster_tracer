@@ -21,7 +21,7 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
+from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt, QObject, QEvent
 from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.PyQt.QtWidgets import QAction, QApplication
 # Initialize Qt resources from file resources.py
@@ -36,6 +36,29 @@ import os.path
 from qgis.core import QgsProject, QgsVectorLayer
 
 from .pointtool import PointTool
+
+
+class LayerTreeShortcutFilter(QObject):
+    def __init__(self, pointtool=None):
+        super().__init__()
+        self.pointtool = pointtool
+
+    def set_pointtool(self, pointtool):
+        self.pointtool = pointtool
+
+    def eventFilter(self, obj, event):
+        pointtool = self.pointtool
+        if (
+            pointtool is not None and
+            event.type() == QEvent.KeyPress and
+            event.modifiers() == Qt.NoModifier and
+            pointtool.has_active_trace() and
+            event.key() in pointtool.handled_shortcut_keys()
+        ):
+            pointtool.keyPressEvent(event)
+            event.accept()
+            return True
+        return super().eventFilter(obj, event)
 
 
 class RasterTracer:
@@ -78,6 +101,7 @@ class RasterTracer:
 
         self.pluginIsActive = False
         self.dockwidget = None
+        self.layer_tree_filter = None
 
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
@@ -196,6 +220,10 @@ class RasterTracer:
         QApplication.restoreOverrideCursor()
         self.map_canvas.setMapTool(self.last_maptool)
 
+        if self.layer_tree_filter is not None:
+            self.iface.layerTreeView().removeEventFilter(self.layer_tree_filter)
+            self.layer_tree_filter = None
+
     def unload(self):
         """Removes the plugin menu item and icon from QGIS GUI."""
 
@@ -246,6 +274,13 @@ class RasterTracer:
         self.tool_identify = PointTool(self.map_canvas, self.iface, self.turn_off_snap)
         # self.map_canvas.setMapTool(self.tool_identify)
         self.activate_map_tool()
+
+        layer_tree_view = self.iface.layerTreeView()
+        if self.layer_tree_filter is None:
+            self.layer_tree_filter = LayerTreeShortcutFilter(self.tool_identify)
+            layer_tree_view.installEventFilter(self.layer_tree_filter)
+        else:
+            self.layer_tree_filter.set_pointtool(self.tool_identify)
 
         settings = QSettings()
         preview_enabled = settings.value('RasterTracer/preview/enabled', True, type=bool)
