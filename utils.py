@@ -1,6 +1,12 @@
+import os
+import time
+
 from osgeo import gdal
-from qgis.core import QgsCoordinateTransform
+from qgis.core import QgsCoordinateTransform, QgsMessageLog, Qgis
 import numpy as np
+
+
+PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
 
 
 class PossiblyIndexedImageError(Exception):
@@ -24,6 +30,7 @@ def get_coords_from_raster_indxs(geo_ref, ij):
 
 
 def get_whole_raster(layer, project_instance):
+    start_time = time.perf_counter() if PROFILE_ENABLED else None
     provider = layer.dataProvider()
     extent = provider.extent()
 
@@ -59,6 +66,18 @@ def get_whole_raster(layer, project_instance):
         band3 = np.array(ds.GetRasterBand(3).ReadAsArray())
     except AttributeError:
         raise PossiblyIndexedImageError
+
+    if PROFILE_ENABLED:
+        duration = time.perf_counter() - start_time
+        total_bytes = (band1.nbytes + band2.nbytes + band3.nbytes)
+        layer_name = layer.name() if hasattr(layer, "name") else ""
+        if not layer_name:
+            layer_name = layer.source()
+        QgsMessageLog.logMessage(
+            f"[profiling] get_whole_raster '{layer_name}': {duration:.2f}s, {total_bytes / (1024 ** 2):.1f} MiB",
+            "RasterTracer",
+            Qgis.Info,
+        )
 
     return ((band1, band2, band3), to_indexes, to_coords,
             to_coords_provider, to_coords_provider2)

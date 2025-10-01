@@ -4,11 +4,14 @@ Main functionality of raster tracer.
 
 from enum import Enum
 from collections import namedtuple
+import os
+import time
+
 import numpy as np
 
 from qgis.core import QgsPointXY, QgsPoint, QgsGeometry, QgsFeature, \
                       QgsVectorLayer, QgsProject, QgsWkbTypes, QgsApplication, \
-                      QgsRectangle, QgsSpatialIndex
+                      QgsRectangle, QgsSpatialIndex, QgsMessageLog
 from qgis.gui import QgsMapToolEmitPoint, QgsMapToolEdit, \
                      QgsRubberBand, QgsVertexMarker, QgsMapTool
 from qgis.PyQt.QtCore import Qt
@@ -28,6 +31,8 @@ Anchor = namedtuple('Anchor', ['x', 'y', 'i', 'j'])
 
 # Flag for experimental Autofollowing mode
 ALLOW_AUTO_FOLLOWING = False
+
+PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
 
 
 class TracingModes(Enum):
@@ -184,12 +189,37 @@ class PointTool(QgsMapToolEdit):
     def trace_color_changed(self, color):
         r, g, b = self.sample
 
+        start_time = time.perf_counter() if PROFILE_ENABLED else None
+        diff_duration = None
         if color is False:
             self.grid_changed = None
         else:
+            compute_start = time.perf_counter() if PROFILE_ENABLED else None
             r0, g0, b0, t = color.getRgb()
             self.grid_changed = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 +
                                        (b0 - b) ** 2)
+            if PROFILE_ENABLED:
+                diff_duration = time.perf_counter() - compute_start
+
+        if PROFILE_ENABLED:
+            total_duration = time.perf_counter() - start_time
+            result_state = "cleared" if color is False else "computed"
+            grid_changed_bytes = (
+                self.grid_changed.nbytes if self.grid_changed is not None else 0
+            )
+            diff_text = (
+                f"{diff_duration:.2f}s" if diff_duration is not None else "n/a"
+            )
+            QgsMessageLog.logMessage(
+                (
+                    "[profiling] trace_color_changed "
+                    f"state={result_state} diff={diff_text}"
+                    f" total={total_duration:.2f}s grid_changed_mb="
+                    f"{(grid_changed_bytes / (1024 ** 2)):.1f}"
+                ),
+                "RasterTracer",
+                Qgis.Info,
+            )
 
     def get_current_vector_layer(self):
         try:
@@ -240,12 +270,17 @@ class PointTool(QgsMapToolEdit):
                 )
             return
 
+        total_start = time.perf_counter() if PROFILE_ENABLED else None
+        load_call_start = time.perf_counter() if PROFILE_ENABLED else None
+        load_duration = None
         try:
             sample, to_indexes, to_coords, to_coords_provider, \
                 to_coords_provider2 = \
                 get_whole_raster(self.rlayer,
                                  QgsProject.instance(),
                                  )
+            if PROFILE_ENABLED:
+                load_duration = time.perf_counter() - load_call_start
         except PossiblyIndexedImageError:
             self.display_message(
                 "Missing Layer",
@@ -255,6 +290,7 @@ class PointTool(QgsMapToolEdit):
                 )
             return
 
+        conversion_start = time.perf_counter() if PROFILE_ENABLED else None
         r = sample[0].astype(float)
         g = sample[1].astype(float)
         b = sample[2].astype(float)
@@ -264,13 +300,38 @@ class PointTool(QgsMapToolEdit):
         g[where_are_NaNs] = 0
         where_are_NaNs = np.isnan(b)
         b[where_are_NaNs] = 0
+        conversion_duration = (
+            time.perf_counter() - conversion_start
+        ) if PROFILE_ENABLED else None
 
+        grid_start = time.perf_counter() if PROFILE_ENABLED else None
         self.sample = (r, g, b)
         self.grid = r + g + b
+        grid_duration = (
+            time.perf_counter() - grid_start
+        ) if PROFILE_ENABLED else None
         self.to_indexes = to_indexes
         self.to_coords = to_coords
         self.to_coords_provider = to_coords_provider
         self.to_coords_provider2 = to_coords_provider2
+
+        if PROFILE_ENABLED:
+            total_duration = time.perf_counter() - total_start
+            pre_duration = load_call_start - total_start
+            color_bytes = r.nbytes + g.nbytes + b.nbytes
+            grid_bytes = self.grid.nbytes if hasattr(self, "grid") else 0
+            QgsMessageLog.logMessage(
+                (
+                    "[profiling] raster_layer_has_changed shape="
+                    f"{r.shape} load_call={load_duration:.2f}s pre_call={pre_duration:.2f}s"
+                    f" convert_cleanup={conversion_duration:.2f}s"
+                    f" grid_sum={grid_duration:.2f}s total={total_duration:.2f}s"
+                    f" color_mb={(color_bytes / (1024 ** 2)):.1f}"
+                    f" grid_mb={(grid_bytes / (1024 ** 2)):.1f}"
+                ),
+                "RasterTracer",
+                Qgis.Info,
+            )
 
     def remove_last_anchor_point(self, undo_edit=True, redraw=True):
         '''

@@ -6,8 +6,16 @@ https://www.redblobgames.com/pathfinding/a-star/implementation.html
 '''
 
 import heapq
+import io
+import os
+import time
+import cProfile
+import pstats
 
-from qgis.core import QgsTask, QgsMessageLog
+from qgis.core import QgsTask, QgsMessageLog, Qgis
+
+
+PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
 
 class PriorityQueue:
     def __init__(self):
@@ -46,6 +54,13 @@ def get_cost(array, current, next):
 
 def FindPathFunction(graph, start, goal):
 
+    profiler = None
+    start_time = None
+    if PROFILE_ENABLED:
+        profiler = cProfile.Profile()
+        profiler.enable()
+        start_time = time.perf_counter()
+
     frontier = PriorityQueue()
     frontier.put(start, 0)
     came_from = {}
@@ -72,6 +87,22 @@ def FindPathFunction(graph, start, goal):
                 came_from[next] = current
 
     path = reconstruct_path(came_from, start, goal)
+
+    if PROFILE_ENABLED and profiler is not None:
+        profiler.disable()
+        duration = time.perf_counter() - start_time
+        stats_stream = io.StringIO()
+        pstats.Stats(profiler, stream=stats_stream).strip_dirs().sort_stats('cumtime').print_stats(15)
+        QgsMessageLog.logMessage(
+            f"[profiling] FindPathFunction duration={duration:.3f}s nodes={len(cost_so_far)}",
+            "RasterTracer",
+            Qgis.Info,
+        )
+        QgsMessageLog.logMessage(
+            stats_stream.getvalue(),
+            "RasterTracer",
+            Qgis.Info,
+        )
 
     return path, cost_so_far[goal]
 
@@ -102,6 +133,7 @@ class FindPathTask(QgsTask):
         self.path = None
         self.callback = callback
         self.vlayer = vlayer
+        self.profile_stats = None
 
     def run(self):
         '''
@@ -112,6 +144,13 @@ class FindPathTask(QgsTask):
         graph = self.graph
         start = self.start
         goal = self.goal
+
+        profiler = None
+        start_time = None
+        if PROFILE_ENABLED:
+            profiler = cProfile.Profile()
+            profiler.enable()
+            start_time = time.perf_counter()
 
         frontier = PriorityQueue()
         frontier.put(start, 0)
@@ -131,6 +170,14 @@ class FindPathTask(QgsTask):
             for next in get_neighbors(size_i, size_j, current):
                 # check isCanceled() to handle cancellation
                 if self.isCanceled():
+                    if PROFILE_ENABLED and profiler is not None:
+                        profiler.disable()
+                        duration = time.perf_counter() - start_time
+                        self.profile_stats = {
+                            "duration": duration,
+                            "nodes": len(cost_so_far),
+                            "profile": "Task cancelled before completion",
+                        }
                     return False
 
                 new_cost = cost_so_far[current] + get_cost(graph, current, next)
@@ -142,6 +189,17 @@ class FindPathTask(QgsTask):
 
         self.path = reconstruct_path(came_from, start, goal)
 
+        if PROFILE_ENABLED and profiler is not None:
+            profiler.disable()
+            duration = time.perf_counter() - start_time
+            stats_stream = io.StringIO()
+            pstats.Stats(profiler, stream=stats_stream).strip_dirs().sort_stats('cumtime').print_stats(15)
+            self.profile_stats = {
+                "duration": duration,
+                "nodes": len(cost_so_far),
+                "profile": stats_stream.getvalue(),
+            }
+
         return True
 
     def finished(self, result):
@@ -151,6 +209,20 @@ class FindPathTask(QgsTask):
 
         if result:
             self.callback(self.path, self.vlayer)
+
+        if PROFILE_ENABLED and self.profile_stats:
+            QgsMessageLog.logMessage(
+                f"[profiling] FindPathTask duration={self.profile_stats['duration']:.3f}s nodes={self.profile_stats['nodes']}",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            if self.profile_stats['profile']:
+                QgsMessageLog.logMessage(
+                    self.profile_stats['profile'],
+                    "RasterTracer",
+                    Qgis.Info,
+                )
+            self.profile_stats = None
 
 
     def cancel(self):
