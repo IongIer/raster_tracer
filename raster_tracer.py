@@ -250,7 +250,7 @@ class RasterTracer:
         settings = QSettings()
         preview_enabled = settings.value('RasterTracer/preview/enabled', True, type=bool)
         preview_color_name = settings.value('RasterTracer/preview/color', '#FF1493')
-        preview_width = settings.value('RasterTracer/preview/width', 0.5, type=float)
+        preview_width = settings.value('RasterTracer/preview/width', 2.7, type=float)
 
         try:
             preview_width = float(preview_width)

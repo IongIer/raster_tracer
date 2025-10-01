@@ -147,7 +147,7 @@ class PointTool(QgsMapToolEdit):
         self.preview_sequence = 0
         self.preview_rubber_band = QgsRubberBand(self.canvas(), QgsWkbTypes.LineGeometry)
         self.preview_color = QColor(255, 20, 147)
-        self.preview_width = 0.5
+        self.preview_width = 2.7
         self.preview_rubber_band.setColor(self.preview_color)
         self.preview_rubber_band.setWidth(self.preview_width)
         self.preview_rubber_band.setLineStyle(Qt.DashLine)
@@ -326,10 +326,18 @@ class PointTool(QgsMapToolEdit):
             self.preview_rubber_band.hide()
             return
 
+        global_path = [
+            (local_i + origin_i, local_j + origin_j) for local_i, local_j in path
+        ]
+
+        if self.smooth_line and len(global_path) > 2:
+            smoothed = smooth(global_path, size=5)
+            smoothed = simplify(smoothed)
+        else:
+            smoothed = global_path
+
         points = []
-        for local_i, local_j in path:
-            global_i = local_i + origin_i
-            global_j = local_j + origin_j
+        for global_i, global_j in smoothed:
             pt_xy = self.to_coords(global_i, global_j)
             if not isinstance(pt_xy, QgsPointXY):
                 pt_xy = QgsPointXY(pt_xy[0], pt_xy[1])
