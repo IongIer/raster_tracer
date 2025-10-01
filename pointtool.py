@@ -1188,9 +1188,22 @@ def add_to_last_feature(vlayer, points):
     last_feature = features[-1]
     fid = last_feature.id()
     geom = last_feature.geometry()
-    points = [QgsPointXY(x, y) for x, y in points]
-    geom.addPointsXY(points)
-    vlayer.changeGeometry(fid, geom)
+    new_points = [QgsPointXY(x, y) for x, y in points]
+
+    if geom.isMultipart():
+        multiline = geom.asMultiPolyline()
+        if not multiline:
+            multiline = [[]]
+        multiline[-1].extend(new_points)
+        new_geom = QgsGeometry.fromMultiPolylineXY(multiline)
+    else:
+        polyline = geom.asPolyline()
+        if polyline is None:
+            polyline = []
+        polyline.extend(new_points)
+        new_geom = QgsGeometry.fromPolylineXY(polyline)
+
+    vlayer.changeGeometry(fid, new_geom)
 
 
 def add_feature_to_vlayer(vlayer, points):
