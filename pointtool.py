@@ -14,7 +14,7 @@ from qgis.core import QgsPointXY, QgsPoint, QgsGeometry, QgsFeature, \
                       QgsRectangle, QgsSpatialIndex, QgsMessageLog
 from qgis.gui import QgsMapToolEmitPoint, QgsMapToolEdit, \
                      QgsRubberBand, QgsVertexMarker, QgsMapTool
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QTimer
 from qgis.PyQt.QtGui import QColor
 from qgis.core import Qgis
 from qgis.core import QgsCoordinateTransform
@@ -92,6 +92,7 @@ class PointTool(QgsMapToolEdit):
 
     def deactivate(self):
         QgsMapTool.deactivate(self)
+        self.clear_preview()
         self.deactivated.emit()
 
     def __init__(self, canvas, iface, turn_off_snap, smooth=False):
@@ -135,6 +136,22 @@ class PointTool(QgsMapToolEdit):
         self.window_padding = 1024
         self.min_window_size = 512
         self.trace_color_value = None
+        self.preview_enabled = True
+        self.preview_interval_ms = 200
+        self.preview_timer = QTimer()
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.timeout.connect(self._execute_preview_request)
+        self.preview_pending_request = None
+        self.preview_last_request = None
+        self.preview_task = None
+        self.preview_sequence = 0
+        self.preview_rubber_band = QgsRubberBand(self.canvas(), QgsWkbTypes.LineGeometry)
+        self.preview_color = QColor(255, 20, 147)
+        self.preview_width = 0.5
+        self.preview_rubber_band.setColor(self.preview_color)
+        self.preview_rubber_band.setWidth(self.preview_width)
+        self.preview_rubber_band.setLineStyle(Qt.DashLine)
+        self.preview_rubber_band.hide()
 
         self.tracking_is_active = False
 
@@ -180,6 +197,7 @@ class PointTool(QgsMapToolEdit):
 
     def snap_tolerance_changed(self, snap_tolerance):
         self.snap_tolerance = snap_tolerance
+        self.clear_preview()
         if snap_tolerance is None:
             self.marker_snap.hide()
         else:
@@ -200,6 +218,131 @@ class PointTool(QgsMapToolEdit):
             self.trace_color_value = (float(r0), float(g0), float(b0))
 
         self._recompute_trace_grid(reason="manual")
+        if self.preview_enabled and self.preview_last_request is not None:
+            self.preview_pending_request = self.preview_last_request
+            if self.preview_timer.isActive():
+                self.preview_timer.stop()
+            self.preview_timer.start(self.preview_interval_ms)
+
+    def set_preview_enabled(self, enabled):
+        self.preview_enabled = enabled
+        self.preview_timer.stop()
+        self.preview_pending_request = None
+        self._cancel_preview_task()
+        self.preview_sequence += 1
+        if not enabled:
+            self.preview_last_request = None
+            self.preview_rubber_band.hide()
+
+    def set_preview_color(self, color):
+        if color is None:
+            return
+        if not isinstance(color, QColor):
+            color = QColor(color)
+        self.preview_color = QColor(color)
+        self.preview_rubber_band.setColor(self.preview_color)
+
+    def set_preview_width(self, width):
+        try:
+            width = float(width)
+        except (TypeError, ValueError):
+            return
+        self.preview_width = width
+        self.preview_rubber_band.setWidth(self.preview_width)
+
+    def clear_preview(self):
+        self.preview_timer.stop()
+        self.preview_pending_request = None
+        self.preview_last_request = None
+        self._cancel_preview_task()
+        self.preview_sequence += 1
+        self.preview_rubber_band.hide()
+
+    def _cancel_preview_task(self):
+        if self.preview_task is not None:
+            self.preview_task.cancel()
+            self.preview_task = None
+
+    def _queue_preview(self, start, goal):
+        if not self.preview_enabled:
+            return
+        if start == goal:
+            self.clear_preview()
+            return
+        request = {
+            "start": start,
+            "goal": goal,
+        }
+        if request == self.preview_pending_request and self.preview_timer.isActive():
+            return
+        if request == self.preview_last_request and self.preview_task is None:
+            return
+        self.preview_pending_request = request
+        if self.preview_timer.isActive():
+            self.preview_timer.stop()
+        self.preview_timer.start(self.preview_interval_ms)
+
+    def _execute_preview_request(self):
+        if not self.preview_enabled:
+            return
+        request = self.preview_pending_request
+        self.preview_pending_request = None
+        if request is None:
+            return
+        self.preview_last_request = request
+        self._start_preview_task(request)
+
+    def _start_preview_task(self, request):
+        start = request["start"]
+        goal = request["goal"]
+        try:
+            preparation = self._prepare_pathfinding(start, goal, reason="preview")
+        except OutsideMapError:
+            self.preview_last_request = None
+            self.preview_rubber_band.hide()
+            return
+
+        grid = preparation["grid"]
+        local_start = preparation["local_start"]
+        local_goal = preparation["local_goal"]
+        origin_i, origin_j = preparation["origin"]
+
+        self._cancel_preview_task()
+        self.preview_sequence += 1
+        current_sequence = self.preview_sequence
+
+        def callback(path, _vlayer, seq=current_sequence, origin=preparation["origin"]):
+            self._preview_task_callback(path, origin[0], origin[1], seq)
+
+        task = FindPathTask(grid, local_start, local_goal, callback, None)
+        self.preview_task = task
+        QgsApplication.taskManager().addTask(task)
+
+    def _preview_task_callback(self, path, origin_i, origin_j, sequence_id):
+        if sequence_id != self.preview_sequence or not self.preview_enabled:
+            return
+        self.preview_task = None
+        if not path:
+            self.preview_rubber_band.hide()
+            return
+
+        points = []
+        for local_i, local_j in path:
+            global_i = local_i + origin_i
+            global_j = local_j + origin_j
+            pt_xy = self.to_coords(global_i, global_j)
+            if not isinstance(pt_xy, QgsPointXY):
+                pt_xy = QgsPointXY(pt_xy[0], pt_xy[1])
+            points.append(pt_xy)
+
+        if not points:
+            self.preview_rubber_band.hide()
+            return
+
+        geometry = QgsGeometry.fromPolylineXY(points)
+        self.preview_rubber_band.setToGeometry(geometry, None)
+        if self.preview_enabled:
+            self.preview_rubber_band.show()
 
     def _ensure_sampler(self):
         if self.raster_sampler is None and self.rlayer is not None:
@@ -480,6 +623,8 @@ class PointTool(QgsMapToolEdit):
                 )
             return
 
+        self.clear_preview()
+
         total_start = time.perf_counter() if PROFILE_ENABLED else None
 
         try:
@@ -536,6 +681,8 @@ class PointTool(QgsMapToolEdit):
         Removes last anchor point and last marker point
         '''
 
+        self.clear_preview()
+
         # check if we have at least one feature to delete
         vlayer = self.get_current_vector_layer()
         if vlayer is None:
@@ -568,9 +715,12 @@ class PointTool(QgsMapToolEdit):
             # change tracing mode
             self.tracing_mode = self.tracing_mode.next()
             self.update_rubber_band()
+            if not self.tracing_mode.is_tracing():
+                self.clear_preview()
         elif e.key() == Qt.Key_S:
             # toggle snap mode
             self.turn_off_snap()
+            self.clear_preview()
         elif e.key() == Qt.Key_Escape:
             # Abort tracing process
             self.abort_tracing_process()
@@ -587,35 +737,28 @@ class PointTool(QgsMapToolEdit):
         marker.setCenter(QgsPointXY(x1, y1))
         self.markers.append(marker)
 
-    def trace_over_image(self,
-                         start,
-                         goal,
-                         do_it_as_task=False,
-                         vlayer=None):
-        '''
-        performs tracing
-        '''
+    def _anchor_indices(self, anchor):
+        if hasattr(anchor, 'i'):
+            return anchor.i, anchor.j
+        return anchor[2], anchor[3]
 
-        i0, j0 = start
-        i1, j1 = goal
-
-        self._ensure_window_for_indices([start, goal], reason="trace")
+    def _prepare_pathfinding(self, start, goal, reason):
+        self._ensure_window_for_indices([start, goal], reason=reason)
 
         if self.sample is None or self.grid is None:
             raise OutsideMapError
 
         try:
-            local_start = self._to_local_indices(i0, j0)
-            local_goal = self._to_local_indices(i1, j1)
+            local_start = self._to_local_indices(*start)
+            local_goal = self._to_local_indices(*goal)
         except OutsideMapError:
-            # try again with a larger window
             self._ensure_window_for_indices(
                 [start, goal],
-                reason="trace-grow",
+                reason=f"{reason}-grow",
                 padding=self.window_padding * 2,
             )
-            local_start = self._to_local_indices(i0, j0)
-            local_goal = self._to_local_indices(i1, j1)
+            local_start = self._to_local_indices(*start)
+            local_goal = self._to_local_indices(*goal)
 
         r, g, b = self.sample
 
@@ -633,6 +776,29 @@ class PointTool(QgsMapToolEdit):
 
         grid_for_path = grid_to_use.astype(np.dtype('l'))
         origin_i, origin_j = self.window_origin
+
+        return {
+            "grid": grid_for_path,
+            "local_start": local_start,
+            "local_goal": local_goal,
+            "origin": (origin_i, origin_j),
+        }
+
+    def trace_over_image(self,
+                         start,
+                         goal,
+                         do_it_as_task=False,
+                         vlayer=None):
+        '''
+        performs tracing
+        '''
+
+        preparation = self._prepare_pathfinding(start, goal, reason="trace")
+
+        grid_for_path = preparation["grid"]
+        local_start = preparation["local_start"]
+        local_goal = preparation["local_goal"]
+        origin_i, origin_j = preparation["origin"]
 
         if do_it_as_task:
             # dirty hack to avoid QGIS crashing
@@ -687,6 +853,7 @@ class PointTool(QgsMapToolEdit):
             start_point = i0, j0
             end_point = i1, j1
             try:
+                self.clear_preview()
                 self.trace_over_image(start_point,
                                       end_point,
                                       do_it_as_task=True,
@@ -804,6 +971,10 @@ class PointTool(QgsMapToolEdit):
         Draws a path after tracer found it.
         '''
 
+        self.preview_rubber_band.hide()
+        self.preview_pending_request = None
+        self.preview_last_request = None
+
         transform = QgsCoordinateTransform(QgsProject.instance().crs(),
                                            vlayer.crs(),
                                            QgsProject.instance())
@@ -834,7 +1005,14 @@ class PointTool(QgsMapToolEdit):
             add_to_last_feature(vlayer, path_ref)
             vlayer.endEditCommand()
         _, _, current_last_point_i, current_last_point_j = self.anchors[-1]
-        self.anchors[-1] = current_last_point[0], current_last_point[1], current_last_point_i, current_last_point_j
+        last_x = current_last_point.x() if hasattr(current_last_point, 'x') else current_last_point[0]
+        last_y = current_last_point.y() if hasattr(current_last_point, 'y') else current_last_point[1]
+        self.anchors[-1] = Anchor(
+            last_x,
+            last_y,
+            current_last_point_i,
+            current_last_point_j,
+        )
         self.redraw()
         self.tracking_is_active = False
 
@@ -876,30 +1054,57 @@ class PointTool(QgsMapToolEdit):
 
         # we need at least one point to draw
         if not self.anchors:
+            self.clear_preview()
             return
 
-        if self.snap_tolerance is not None and self.tracing_mode.is_tracing():
-            qgsPoint = self.toMapCoordinates(mouseEvent.pos())
-            x1, y1 = qgsPoint.x(), qgsPoint.y()
-            # i, j = get_indxs_from_raster_coords(self.geo_ref, x1, y1)
-            i, j = self.to_indexes(x1, y1)
+        qgs_point = self.toMapCoordinates(mouseEvent.pos())
+        x1, y1 = qgs_point.x(), qgs_point.y()
+
+        preview_goal = None
+
+        if self.tracing_mode.is_tracing() and self.to_indexes is not None:
             try:
-                i1, j1 = self.snap(i, j)
-            except OutsideMapError:
-                return
-            # x1, y1 = get_coords_from_raster_indxs(self.geo_ref, i1, j1)
-            x1, y1 = self.to_coords(i1, j1)
-            self.marker_snap.setCenter(QgsPointXY(x1, y1))
+                base_i, base_j = self.to_indexes(x1, y1)
+            except Exception:  # pylint: disable=broad-except
+                base_i = None
+                base_j = None
+
+            if base_i is not None and base_j is not None:
+                target_i, target_j = base_i, base_j
+                if self.snap_tolerance is not None:
+                    try:
+                        target_i, target_j = self.snap(base_i, base_j)
+                    except OutsideMapError:
+                        self.clear_preview()
+                        return
+                    snap_point = self.to_coords(target_i, target_j)
+                    if hasattr(snap_point, 'x'):
+                        self.marker_snap.setCenter(QgsPointXY(snap_point.x(), snap_point.y()))
+                    else:
+                        self.marker_snap.setCenter(QgsPointXY(snap_point[0], snap_point[1]))
+                preview_goal = (target_i, target_j)
+        else:
+            self.clear_preview()
 
         self.last_mouse_event_pos = mouseEvent.pos()
         self.update_rubber_band()
         self.redraw()
+
+        if (self.preview_enabled and self.tracing_mode.is_tracing() and
+                preview_goal is not None and len(self.anchors) >= 1):
+            start_anchor = self.anchors[-1]
+            start = self._anchor_indices(start_anchor)
+            self._queue_preview(start, preview_goal)
+        elif self.preview_enabled:
+            self.clear_preview()
 
     def abort_tracing_process(self):
         '''
         Terminate background process of tracing raster
         after the user hits Esc.
         '''
+
+        self.clear_preview()
 
         # check if we have any tasks
         if self.find_path_task is None:

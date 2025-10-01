@@ -22,7 +22,7 @@
  ***************************************************************************/
 """
 from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.PyQt.QtWidgets import QAction, QApplication
 # Initialize Qt resources from file resources.py
 from .resources import *
@@ -247,6 +247,39 @@ class RasterTracer:
         # self.map_canvas.setMapTool(self.tool_identify)
         self.activate_map_tool()
 
+        settings = QSettings()
+        preview_enabled = settings.value('RasterTracer/preview/enabled', True, type=bool)
+        preview_color_name = settings.value('RasterTracer/preview/color', '#FF1493')
+        preview_width = settings.value('RasterTracer/preview/width', 0.5, type=float)
+
+        try:
+            preview_width = float(preview_width)
+        except (TypeError, ValueError):
+            preview_width = 0.5
+
+        preview_color = QColor(preview_color_name)
+        if not preview_color.isValid():
+            preview_color = QColor('#FF1493')
+
+        self.tool_identify.set_preview_color(preview_color)
+        self.tool_identify.set_preview_width(preview_width)
+        self.tool_identify.set_preview_enabled(preview_enabled)
+
+        self.dockwidget.checkBoxPreview.blockSignals(True)
+        self.dockwidget.checkBoxPreview.setChecked(preview_enabled)
+        self.dockwidget.checkBoxPreview.blockSignals(False)
+
+        self.dockwidget.previewColorButton.blockSignals(True)
+        self.dockwidget.previewColorButton.setColor(preview_color)
+        self.dockwidget.previewColorButton.blockSignals(False)
+
+        self.dockwidget.previewWidthSpinBox.blockSignals(True)
+        self.dockwidget.previewWidthSpinBox.setValue(preview_width)
+        self.dockwidget.previewWidthSpinBox.blockSignals(False)
+
+        self.dockwidget.previewColorButton.setEnabled(preview_enabled)
+        self.dockwidget.previewWidthSpinBox.setEnabled(preview_enabled)
+
         excluded_layers = [l for l in QgsProject().instance().mapLayers().values() 
                                                     if isinstance(l, QgsVectorLayer)]
         self.dockwidget.mMapLayerComboBox.setExceptedLayerList(excluded_layers)
@@ -267,6 +300,10 @@ class RasterTracer:
 
         self.dockwidget.checkBoxSnap2.stateChanged.connect(self.checkBoxSnap2_changed)
         self.dockwidget.SpinBoxSnap.valueChanged.connect(self.checkBoxSnap2_changed)
+
+        self.dockwidget.checkBoxPreview.stateChanged.connect(self.preview_enabled_changed)
+        self.dockwidget.previewColorButton.colorChanged.connect(self.preview_color_changed)
+        self.dockwidget.previewWidthSpinBox.valueChanged.connect(self.preview_width_changed)
 
 
     def raster_layer_changed(self):
@@ -293,6 +330,30 @@ class RasterTracer:
         else:
             self.dockwidget.SpinBoxSnap.setEnabled(False)
             self.tool_identify.snap2_tolerance_changed(None)
+
+    def preview_enabled_changed(self):
+        enabled = self.dockwidget.checkBoxPreview.isChecked()
+        self.dockwidget.previewColorButton.setEnabled(enabled)
+        self.dockwidget.previewWidthSpinBox.setEnabled(enabled)
+        self.tool_identify.set_preview_enabled(enabled)
+        settings = QSettings()
+        settings.setValue('RasterTracer/preview/enabled', enabled)
+
+    def preview_color_changed(self, color):
+        if not isinstance(color, QColor):
+            color = QColor(color)
+        self.tool_identify.set_preview_color(color)
+        settings = QSettings()
+        settings.setValue('RasterTracer/preview/color', color.name(QColor.HexArgb))
+
+    def preview_width_changed(self, value):
+        try:
+            width = float(value)
+        except (TypeError, ValueError):
+            width = 0.5
+        self.tool_identify.set_preview_width(width)
+        settings = QSettings()
+        settings.setValue('RasterTracer/preview/width', width)
 
 
     def turn_off_snap(self):
