@@ -22,6 +22,8 @@ class State:
         Event when the user clicks on the map with the right button
         '''
 
+        self.pointtool.clear_preview()
+
         # finish point path if it was last point
         self.pointtool.anchors = []
 

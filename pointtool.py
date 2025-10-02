@@ -4,14 +4,17 @@ Main functionality of raster tracer.
 
 from enum import Enum
 from collections import namedtuple
+import os
+import time
+
 import numpy as np
 
 from qgis.core import QgsPointXY, QgsPoint, QgsGeometry, QgsFeature, \
                       QgsVectorLayer, QgsProject, QgsWkbTypes, QgsApplication, \
-                      QgsRectangle, QgsSpatialIndex
+                      QgsRectangle, QgsSpatialIndex, QgsMessageLog
 from qgis.gui import QgsMapToolEmitPoint, QgsMapToolEdit, \
                      QgsRubberBand, QgsVertexMarker, QgsMapTool
-from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtCore import Qt, QTimer
 from qgis.PyQt.QtGui import QColor
 from qgis.core import Qgis
 from qgis.core import QgsCoordinateTransform
@@ -28,6 +31,17 @@ Anchor = namedtuple('Anchor', ['x', 'y', 'i', 'j'])
 
 # Flag for experimental Autofollowing mode
 ALLOW_AUTO_FOLLOWING = False
+
+SHORTCUT_KEYS = {
+    Qt.Key_A,
+    Qt.Key_B,
+    Qt.Key_Backspace,
+    Qt.Key_S,
+    Qt.Key_Escape,
+    Qt.Key_T,
+}
+
+PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
 
 
 class TracingModes(Enum):
@@ -87,14 +101,24 @@ class PointTool(QgsMapToolEdit):
 
     def deactivate(self):
         QgsMapTool.deactivate(self)
+        self.clear_preview()
         self.deactivated.emit()
 
-    def __init__(self, canvas, iface, turn_off_snap, smooth=False):
+    def __init__(
+            self,
+            canvas,
+            iface,
+            turn_off_snap,
+            smooth=False,
+            ensure_trace_color_enabled=None,
+            set_trace_color=None):
         '''
         canvas - link to the QgsCanvas of the application
         iface - link to the Qgis Interface
         turn_off_snap - flag sets snapping to the nearest color
         smooth - flag sets smoothing of the traced path
+        ensure_trace_color_enabled - callback enabling trace-color mode in UI
+        set_trace_color - callback syncing sampled color back to UI control
         '''
 
         self.iface = iface
@@ -109,6 +133,8 @@ class PointTool(QgsMapToolEdit):
 
         self.turn_off_snap = turn_off_snap
         self.smooth_line = smooth
+        self._enable_trace_color_cb = ensure_trace_color_enabled
+        self._set_trace_color_cb = set_trace_color
 
         # possible variants: gray_diff, as_is, color_diff (using v from hsv)
         self.grid_conversion = "gray_diff"
@@ -124,6 +150,32 @@ class PointTool(QgsMapToolEdit):
         self.vlayer = None
         self.grid = None
         self.sample = None
+        self.raster_sampler = None
+        self.to_indexes = None
+        self.to_coords = None
+        self.to_coords_provider = None
+        self.to_coords_provider2 = None
+        self.window_origin = None
+        self.window_shape = None
+        self.window_padding = 1024
+        self.min_window_size = 512
+        self.trace_color_value = None
+        self.preview_enabled = True
+        self.preview_interval_ms = 200
+        self.preview_timer = QTimer()
+        self.preview_timer.setSingleShot(True)
+        self.preview_timer.timeout.connect(self._execute_preview_request)
+        self.preview_pending_request = None
+        self.preview_last_request = None
+        self.preview_task = None
+        self.preview_sequence = 0
+        self.preview_rubber_band = QgsRubberBand(self.canvas(), QgsWkbTypes.LineGeometry)
+        self.preview_color = QColor(255, 20, 147)
+        self.preview_width = 2.7
+        self.preview_rubber_band.setColor(self.preview_color)
+        self.preview_rubber_band.setWidth(self.preview_width)
+        self.preview_rubber_band.setLineStyle(Qt.DashLine)
+        self.preview_rubber_band.hide()
 
         self.tracking_is_active = False
 
@@ -169,6 +221,7 @@ class PointTool(QgsMapToolEdit):
 
     def snap_tolerance_changed(self, snap_tolerance):
         self.snap_tolerance = snap_tolerance
+        self.clear_preview()
         if snap_tolerance is None:
             self.marker_snap.hide()
         else:
@@ -182,14 +235,376 @@ class PointTool(QgsMapToolEdit):
         #     self.marker_snap.show()
 
     def trace_color_changed(self, color):
-        r, g, b = self.sample
-
         if color is False:
-            self.grid_changed = None
+            self.trace_color_value = None
         else:
-            r0, g0, b0, t = color.getRgb()
+            r0, g0, b0, _ = color.getRgb()
+            self.trace_color_value = (float(r0), float(g0), float(b0))
+
+        self._recompute_trace_grid(reason="manual")
+        if self.preview_enabled and self.preview_last_request is not None:
+            self.preview_pending_request = self.preview_last_request
+            if self.preview_timer.isActive():
+                self.preview_timer.stop()
+            self.preview_timer.start(self.preview_interval_ms)
+
+    def set_preview_enabled(self, enabled):
+        self.preview_enabled = enabled
+        self.preview_timer.stop()
+        self.preview_pending_request = None
+        self._cancel_preview_task()
+        self.preview_sequence += 1
+        if not enabled:
+            self.preview_last_request = None
+            self.preview_rubber_band.hide()
+
+    def set_preview_color(self, color):
+        if color is None:
+            return
+        if not isinstance(color, QColor):
+            color = QColor(color)
+        self.preview_color = QColor(color)
+        self.preview_rubber_band.setColor(self.preview_color)
+
+    def set_preview_width(self, width):
+        try:
+            width = float(width)
+        except (TypeError, ValueError):
+            return
+        self.preview_width = width
+        self.preview_rubber_band.setWidth(self.preview_width)
+
+    def clear_preview(self):
+        self.preview_timer.stop()
+        self.preview_pending_request = None
+        self.preview_last_request = None
+        self._cancel_preview_task()
+        self.preview_sequence += 1
+        self.preview_rubber_band.hide()
+
+    def _cancel_preview_task(self):
+        if self.preview_task is not None:
+            self.preview_task.cancel()
+            self.preview_task = None
+
+    def _queue_preview(self, start, goal):
+        if not self.preview_enabled:
+            return
+        if start == goal:
+            self.clear_preview()
+            return
+        request = {
+            "start": start,
+            "goal": goal,
+        }
+        if request == self.preview_pending_request and self.preview_timer.isActive():
+            return
+        if request == self.preview_last_request and self.preview_task is None:
+            return
+        self.preview_pending_request = request
+        if self.preview_timer.isActive():
+            self.preview_timer.stop()
+        self.preview_timer.start(self.preview_interval_ms)
+
+    def _execute_preview_request(self):
+        if not self.preview_enabled:
+            return
+        request = self.preview_pending_request
+        self.preview_pending_request = None
+        if request is None:
+            return
+        self.preview_last_request = request
+        self._start_preview_task(request)
+
+    def _start_preview_task(self, request):
+        start = request["start"]
+        goal = request["goal"]
+        try:
+            preparation = self._prepare_pathfinding(start, goal, reason="preview")
+        except OutsideMapError:
+            self.preview_last_request = None
+            self.preview_rubber_band.hide()
+            return
+
+        grid = preparation["grid"]
+        local_start = preparation["local_start"]
+        local_goal = preparation["local_goal"]
+        origin_i, origin_j = preparation["origin"]
+
+        self._cancel_preview_task()
+        self.preview_sequence += 1
+        current_sequence = self.preview_sequence
+
+        def callback(path, _vlayer, seq=current_sequence, origin=preparation["origin"]):
+            self._preview_task_callback(path, origin[0], origin[1], seq)
+
+        task = FindPathTask(grid, local_start, local_goal, callback, None)
+        self.preview_task = task
+        QgsApplication.taskManager().addTask(task)
+
+    def _preview_task_callback(self, path, origin_i, origin_j, sequence_id):
+        if sequence_id != self.preview_sequence or not self.preview_enabled:
+            return
+        self.preview_task = None
+        if not path:
+            self.preview_rubber_band.hide()
+            return
+
+        global_path = [
+            (local_i + origin_i, local_j + origin_j) for local_i, local_j in path
+        ]
+
+        if self.smooth_line and len(global_path) > 2:
+            smoothed = smooth(global_path, size=5)
+            smoothed = simplify(smoothed)
+        else:
+            smoothed = global_path
+
+        points = []
+        for global_i, global_j in smoothed:
+            pt_xy = self.to_coords(global_i, global_j)
+            if not isinstance(pt_xy, QgsPointXY):
+                pt_xy = QgsPointXY(pt_xy[0], pt_xy[1])
+            points.append(pt_xy)
+
+        if not points:
+            self.preview_rubber_band.hide()
+            return
+
+        geometry = QgsGeometry.fromPolylineXY(points)
+        self.preview_rubber_band.setToGeometry(geometry, None)
+        if self.preview_enabled:
+            self.preview_rubber_band.show()
+
+    def _ensure_sampler(self):
+        if self.raster_sampler is None and self.rlayer is not None:
+            try:
+                sampler = get_whole_raster(
+                    self.rlayer,
+                    QgsProject.instance(),
+                )
+            except PossiblyIndexedImageError:
+                self.display_message(
+                    "Missing Layer",
+                    "Can't trace indexed or gray image",
+                    level='Critical',
+                    duration=2,
+                    )
+                self.raster_sampler = None
+            else:
+                self.raster_sampler = sampler
+                self.to_indexes = self.raster_sampler.to_indexes
+                self.to_coords = self.raster_sampler.to_coords
+                self.to_coords_provider = self.raster_sampler.to_coords_provider
+                self.to_coords_provider2 = self.raster_sampler.to_coords_provider2
+                self.sample = None
+                self.grid = None
+                self.grid_changed = None
+                self.window_origin = None
+                self.window_shape = None
+                self._recompute_trace_grid(reason="lazy-load")
+
+    def _indices_inside_window(self, index):
+        if self.window_origin is None or self.window_shape is None:
+            return False
+        origin_i, origin_j = self.window_origin
+        height, width = self.window_shape
+        i, j = index
+        return (
+            origin_i <= i < origin_i + height and
+            origin_j <= j < origin_j + width
+        )
+
+    def _compute_window_bounds(self, indices, padding):
+        if self.raster_sampler is None:
+            return None
+
+        height = self.raster_sampler.height
+        width = self.raster_sampler.width
+
+        clamped_i = []
+        clamped_j = []
+        for i, j in indices:
+            clamped_i.append(max(0, min(int(i), height - 1)))
+            clamped_j.append(max(0, min(int(j), width - 1)))
+
+        if not clamped_i or not clamped_j:
+            return None
+
+        min_i = min(clamped_i)
+        max_i = max(clamped_i)
+        min_j = min(clamped_j)
+        max_j = max(clamped_j)
+
+        target_padding = max(int(padding), 0)
+
+        i_min = max(0, min_i - target_padding)
+        i_max = min(height, max_i + target_padding + 1)
+        j_min = max(0, min_j - target_padding)
+        j_max = min(width, max_j + target_padding + 1)
+
+        min_height = min(self.min_window_size, height)
+        min_width = min(self.min_window_size, width)
+
+        current_height = i_max - i_min
+        if current_height < min_height:
+            needed = min_height - current_height
+            extend_top = min(i_min, needed // 2)
+            extend_bottom = min(height - i_max, needed - extend_top)
+            i_min -= extend_top
+            i_max += extend_bottom
+            i_min = max(0, i_min)
+            i_max = min(height, i_max)
+
+        current_width = j_max - j_min
+        if current_width < min_width:
+            needed = min_width - current_width
+            extend_left = min(j_min, needed // 2)
+            extend_right = min(width - j_max, needed - extend_left)
+            j_min -= extend_left
+            j_max += extend_right
+            j_min = max(0, j_min)
+            j_max = min(width, j_max)
+
+        return int(i_min), int(i_max), int(j_min), int(j_max)
+
+    def _load_window(self, bounds, reason):
+        if bounds is None or self.raster_sampler is None:
+            return
+
+        i_min, i_max, j_min, j_max = bounds
+        load_start = time.perf_counter() if PROFILE_ENABLED else None
+
+        bands, origin, shape = self.raster_sampler.read_window(
+            i_min,
+            i_max,
+            j_min,
+            j_max,
+        )
+
+        if bands is None or shape == (0, 0):
+            return
+
+        prep_start = time.perf_counter() if PROFILE_ENABLED else None
+        cleaned_bands = []
+        for band in bands:
+            cleaned = np.nan_to_num(band, copy=False)
+            cleaned_bands.append(cleaned)
+        prep_duration = (
+            time.perf_counter() - prep_start
+        ) if PROFILE_ENABLED else None
+
+        grid_start = time.perf_counter() if PROFILE_ENABLED else None
+        grid = cleaned_bands[0] + cleaned_bands[1] + cleaned_bands[2]
+        grid_duration = (
+            time.perf_counter() - grid_start
+        ) if PROFILE_ENABLED else None
+
+        self.sample = tuple(cleaned_bands)
+        self.grid = grid
+        self.window_origin = origin
+        self.window_shape = shape
+        self.grid_changed = None
+
+        total_duration = (
+            time.perf_counter() - load_start
+        ) if PROFILE_ENABLED else None
+
+        if PROFILE_ENABLED:
+            color_bytes = sum(arr.nbytes for arr in self.sample)
+            grid_bytes = self.grid.nbytes if isinstance(self.grid, np.ndarray) else 0
+
+            def _fmt(value):
+                return f"{value:.2f}s" if value is not None else "n/a"
+
+            QgsMessageLog.logMessage(
+                (
+                    "[profiling] window_prepare "
+                    f"reason={reason} origin={origin} shape={shape} "
+                    f"prep={_fmt(prep_duration)} grid_sum={_fmt(grid_duration)} "
+                    f"total={_fmt(total_duration)} color_mb={(color_bytes / (1024 ** 2)):.1f} "
+                    f"grid_mb={(grid_bytes / (1024 ** 2)):.1f}"
+                ),
+                "RasterTracer",
+                Qgis.Info,
+            )
+
+        self._recompute_trace_grid(reason=f"window:{reason}")
+
+    def _ensure_window_for_indices(self, indices, reason, padding=None):
+        if not indices:
+            return
+
+        self._ensure_sampler()
+        if self.raster_sampler is None:
+            return
+
+        if padding is None:
+            padding = self.window_padding
+
+        if all(self._indices_inside_window(index) for index in indices):
+            return
+
+        bounds = self._compute_window_bounds(indices, padding)
+        self._load_window(bounds, reason)
+
+    def _to_local_indices(self, i, j):
+        if self.window_origin is None:
+            raise OutsideMapError
+        origin_i, origin_j = self.window_origin
+        local_i = i - origin_i
+        local_j = j - origin_j
+        if (
+            local_i < 0 or local_j < 0 or
+            self.window_shape is None or
+            local_i >= self.window_shape[0] or
+            local_j >= self.window_shape[1]
+        ):
+            raise OutsideMapError
+        return local_i, local_j
+
+    def _recompute_trace_grid(self, reason):
+        if not PROFILE_ENABLED and self.sample is None and self.trace_color_value is None:
+            # fast path to avoid work when nothing is ready and profiling off
+            self.grid_changed = None
+            return
+
+        start_time = time.perf_counter() if PROFILE_ENABLED else None
+        diff_duration = None
+
+        if self.sample is None:
+            self.grid_changed = None
+            state = "no-sample"
+        elif self.trace_color_value is None:
+            self.grid_changed = None
+            state = "cleared"
+        else:
+            compute_start = time.perf_counter() if PROFILE_ENABLED else None
+            r, g, b = self.sample
+            r0, g0, b0 = self.trace_color_value
             self.grid_changed = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 +
                                        (b0 - b) ** 2)
+            if PROFILE_ENABLED:
+                diff_duration = time.perf_counter() - compute_start
+            state = "computed"
+
+        if PROFILE_ENABLED:
+            total_duration = time.perf_counter() - start_time if start_time is not None else None
+            diff_text = f"{diff_duration:.2f}s" if diff_duration is not None else "n/a"
+            total_text = f"{total_duration:.2f}s" if total_duration is not None else "n/a"
+            grid_changed_bytes = (
+                self.grid_changed.nbytes if isinstance(self.grid_changed, np.ndarray) else 0
+            )
+            QgsMessageLog.logMessage(
+                (
+                    "[profiling] trace_color_changed "
+                    f"state={state} reason={reason} diff={diff_text} "
+                    f"total={total_text} grid_changed_mb="
+                    f"{(grid_changed_bytes / (1024 ** 2)):.1f}"
+                ),
+                "RasterTracer",
+                Qgis.Info,
+            )
 
     def get_current_vector_layer(self):
         try:
@@ -240,12 +655,15 @@ class PointTool(QgsMapToolEdit):
                 )
             return
 
+        self.clear_preview()
+
+        total_start = time.perf_counter() if PROFILE_ENABLED else None
+
         try:
-            sample, to_indexes, to_coords, to_coords_provider, \
-                to_coords_provider2 = \
-                get_whole_raster(self.rlayer,
-                                 QgsProject.instance(),
-                                 )
+            self.raster_sampler = get_whole_raster(
+                self.rlayer,
+                QgsProject.instance(),
+            )
         except PossiblyIndexedImageError:
             self.display_message(
                 "Missing Layer",
@@ -253,29 +671,49 @@ class PointTool(QgsMapToolEdit):
                 level='Critical',
                 duration=2,
                 )
+            self.raster_sampler = None
+            self.sample = None
+            self.grid = None
+            self.grid_changed = None
+            self.window_origin = None
+            self.window_shape = None
             return
 
-        r = sample[0].astype(float)
-        g = sample[1].astype(float)
-        b = sample[2].astype(float)
-        where_are_NaNs = np.isnan(r)
-        r[where_are_NaNs] = 0
-        where_are_NaNs = np.isnan(g)
-        g[where_are_NaNs] = 0
-        where_are_NaNs = np.isnan(b)
-        b[where_are_NaNs] = 0
+        self.to_indexes = self.raster_sampler.to_indexes
+        self.to_coords = self.raster_sampler.to_coords
+        self.to_coords_provider = self.raster_sampler.to_coords_provider
+        self.to_coords_provider2 = self.raster_sampler.to_coords_provider2
 
-        self.sample = (r, g, b)
-        self.grid = r + g + b
-        self.to_indexes = to_indexes
-        self.to_coords = to_coords
-        self.to_coords_provider = to_coords_provider
-        self.to_coords_provider2 = to_coords_provider2
+        self.sample = None
+        self.grid = None
+        self.grid_changed = None
+        self.window_origin = None
+        self.window_shape = None
+
+        self._recompute_trace_grid(reason="raster-change")
+
+        if PROFILE_ENABLED:
+            total_duration = time.perf_counter() - total_start if total_start is not None else None
+            total_text = f"{total_duration:.2f}s" if total_duration is not None else "n/a"
+            raster_size = (
+                self.raster_sampler.height if self.raster_sampler else 0,
+                self.raster_sampler.width if self.raster_sampler else 0,
+            )
+            QgsMessageLog.logMessage(
+                (
+                    "[profiling] raster_layer_has_changed "
+                    f"size={raster_size} total={total_text}"
+                ),
+                "RasterTracer",
+                Qgis.Info,
+            )
 
     def remove_last_anchor_point(self, undo_edit=True, redraw=True):
         '''
         Removes last anchor point and last marker point
         '''
+
+        self.clear_preview()
 
         # check if we have at least one feature to delete
         vlayer = self.get_current_vector_layer()
@@ -309,12 +747,17 @@ class PointTool(QgsMapToolEdit):
             # change tracing mode
             self.tracing_mode = self.tracing_mode.next()
             self.update_rubber_band()
+            if not self.tracing_mode.is_tracing():
+                self.clear_preview()
         elif e.key() == Qt.Key_S:
             # toggle snap mode
             self.turn_off_snap()
+            self.clear_preview()
         elif e.key() == Qt.Key_Escape:
             # Abort tracing process
             self.abort_tracing_process()
+        elif e.key() == Qt.Key_T:
+            self._handle_trace_color_shortcut()
 
     def add_anchor_points(self, x1, y1, i1, j1):
         '''
@@ -328,6 +771,140 @@ class PointTool(QgsMapToolEdit):
         marker.setCenter(QgsPointXY(x1, y1))
         self.markers.append(marker)
 
+    def handled_shortcut_keys(self):
+        return SHORTCUT_KEYS
+
+    def _handle_trace_color_shortcut(self):
+        if self.to_indexes is None:
+            QgsMessageLog.logMessage(
+                "[shortcut] Ignoring 'T' – no raster selected",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return
+
+        if self.last_mouse_event_pos is None:
+            return
+
+        qgs_point = self.toMapCoordinates(self.last_mouse_event_pos)
+        x, y = qgs_point.x(), qgs_point.y()
+
+        try:
+            i, j = self.to_indexes(x, y)
+        except Exception:  # pylint: disable=broad-except
+            QgsMessageLog.logMessage(
+                "[shortcut] Ignoring 'T' – point outside raster extent",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return
+
+        color = self._sample_color_at_indices(i, j)
+        if color is None:
+            return
+
+        if self._enable_trace_color_cb is not None:
+            self._enable_trace_color_cb()
+
+        if self._set_trace_color_cb is not None:
+            self._set_trace_color_cb(color)
+        else:
+            self.trace_color_changed(color)
+
+        if not self.tracing_mode.is_tracing():
+            self.tracing_mode = TracingModes.PATH
+            self.update_rubber_band()
+
+    def _sample_color_at_indices(self, i, j):
+        self._ensure_window_for_indices([(i, j)], reason="shortcut-sample")
+
+        if self.sample is None:
+            QgsMessageLog.logMessage(
+                "[shortcut] Sampling failed – raster data unavailable",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return None
+
+        try:
+            local_i, local_j = self._to_local_indices(i, j)
+        except OutsideMapError:
+            QgsMessageLog.logMessage(
+                "[shortcut] Sampling failed – indices outside window",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return None
+
+        try:
+            r_band, g_band, b_band = self.sample
+            r_val = float(r_band[local_i, local_j])
+            g_val = float(g_band[local_i, local_j])
+            b_val = float(b_band[local_i, local_j])
+        except (IndexError, TypeError, ValueError):
+            QgsMessageLog.logMessage(
+                "[shortcut] Sampling failed – invalid pixel data",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return None
+
+        r_int = int(np.clip(round(r_val), 0, 255))
+        g_int = int(np.clip(round(g_val), 0, 255))
+        b_int = int(np.clip(round(b_val), 0, 255))
+
+        return QColor(r_int, g_int, b_int)
+
+    def has_active_trace(self):
+        return bool(self.anchors) or self.tracking_is_active
+
+    def _anchor_indices(self, anchor):
+        if hasattr(anchor, 'i'):
+            return anchor.i, anchor.j
+        return anchor[2], anchor[3]
+
+    def _prepare_pathfinding(self, start, goal, reason):
+        self._ensure_window_for_indices([start, goal], reason=reason)
+
+        if self.sample is None or self.grid is None:
+            raise OutsideMapError
+
+        try:
+            local_start = self._to_local_indices(*start)
+            local_goal = self._to_local_indices(*goal)
+        except OutsideMapError:
+            self._ensure_window_for_indices(
+                [start, goal],
+                reason=f"{reason}-grow",
+                padding=self.window_padding * 2,
+            )
+            local_start = self._to_local_indices(*start)
+            local_goal = self._to_local_indices(*goal)
+
+        r, g, b = self.sample
+
+        try:
+            r0 = r[local_goal]
+            g0 = g[local_goal]
+            b0 = b[local_goal]
+        except IndexError:
+            raise OutsideMapError
+
+        if self.grid_changed is None:
+            grid_to_use = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 + (b0 - b) ** 2)
+        else:
+            grid_to_use = self.grid_changed
+
+        grid_for_path = grid_to_use.astype(np.dtype('l'))
+        origin_i, origin_j = self.window_origin
+
+        return {
+            "grid": grid_for_path,
+            "local_start": local_start,
+            "local_goal": local_goal,
+            "origin": (origin_i, origin_j),
+        }
+
     def trace_over_image(self,
                          start,
                          goal,
@@ -337,30 +914,25 @@ class PointTool(QgsMapToolEdit):
         performs tracing
         '''
 
-        i0, j0 = start
-        i1, j1 = goal
+        preparation = self._prepare_pathfinding(start, goal, reason="trace")
 
-        r, g, b, = self.sample
-
-        try:
-            r0 = r[i1, j1]
-            g0 = g[i1, j1]
-            b0 = b[i1, j1]
-        except IndexError:
-            raise OutsideMapError
-
-        if self.grid_changed is None:
-            grid = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 + (b0 - b) ** 2)
-        else:
-            grid = self.grid_changed
+        grid_for_path = preparation["grid"]
+        local_start = preparation["local_start"]
+        local_goal = preparation["local_goal"]
+        origin_i, origin_j = preparation["origin"]
 
         if do_it_as_task:
             # dirty hack to avoid QGIS crashing
             self.find_path_task = FindPathTask(
-                grid.astype(np.dtype('l')),
-                start,
-                goal,
-                self.draw_path,
+                grid_for_path,
+                local_start,
+                local_goal,
+                lambda path, layer: self._task_path_callback(
+                    path,
+                    layer,
+                    origin_i,
+                    origin_j,
+                ),
                 vlayer,
                 )
 
@@ -370,11 +942,19 @@ class PointTool(QgsMapToolEdit):
             self.tracking_is_active = True
         else:
             path, cost = FindPathFunction(
-                grid.astype(np.dtype('l')),
-                (i0, j0),
-                (i1, j1),
+                grid_for_path,
+                local_start,
+                local_goal,
                 )
-            return path, cost
+            global_path = [
+                (i + origin_i, j + origin_j) for i, j in path
+            ]
+            return global_path, cost
+
+    def _task_path_callback(self, path, vlayer, origin_i, origin_j):
+        if path is not None:
+            path = [(i + origin_i, j + origin_j) for i, j in path]
+        self.draw_path(path, vlayer)
 
     def trace(self, x1, y1, i1, j1, vlayer):
         '''
@@ -394,6 +974,7 @@ class PointTool(QgsMapToolEdit):
             start_point = i0, j0
             end_point = i1, j1
             try:
+                self.clear_preview()
                 self.trace_over_image(start_point,
                                       end_point,
                                       do_it_as_task=True,
@@ -432,30 +1013,42 @@ class PointTool(QgsMapToolEdit):
         if self.grid_changed is None:
             return i, j
 
+        self._ensure_window_for_indices([(i, j)], reason="snap")
+
+        if self.grid_changed is None:
+            return i, j
+
+        local_i, local_j = self._to_local_indices(i, j)
+
         size_i, size_j = self.grid.shape
         size = self.snap_tolerance
 
-        if i < size or j < size or i + size > size_i or j + size > size_j:
+        if (
+            local_i < size or
+            local_j < size or
+            local_i + size > size_i or
+            local_j + size > size_j
+        ):
             raise OutsideMapError
 
-        grid_small = self.grid_changed
-        grid_small = grid_small[i - size: i + size, j - size: j + size]
+        grid_small = self.grid_changed[
+            local_i - size: local_i + size,
+            local_j - size: local_j + size,
+        ]
 
         smallest_cells = np.where(grid_small == np.amin(grid_small))
         coordinates = list(zip(smallest_cells[0], smallest_cells[1]))
 
-        if len(coordinates) == 1:
-            delta_i, delta_j = coordinates[0]
-            delta_i -= size
-            delta_j -= size
-        else:
-            # find the closest to the center
-            deltas = [(i - size, j - size) for i, j in coordinates]
-            lengths = [(i ** 2 + j ** 2) for i, j in deltas]
-            i = lengths.index(min(lengths))
-            delta_i, delta_j = deltas[i]
+        offsets = [(ci - size, cj - size) for ci, cj in coordinates]
 
-        return i+delta_i, j+delta_j
+        if len(offsets) == 1:
+            offset_i, offset_j = offsets[0]
+        else:
+            lengths = [(di ** 2 + dj ** 2) for di, dj in offsets]
+            best_index = lengths.index(min(lengths))
+            offset_i, offset_j = offsets[best_index]
+
+        return i + offset_i, j + offset_j
 
     def canvasReleaseEvent(self, mouseEvent):
         '''
@@ -499,6 +1092,10 @@ class PointTool(QgsMapToolEdit):
         Draws a path after tracer found it.
         '''
 
+        self.preview_rubber_band.hide()
+        self.preview_pending_request = None
+        self.preview_last_request = None
+
         transform = QgsCoordinateTransform(QgsProject.instance().crs(),
                                            vlayer.crs(),
                                            QgsProject.instance())
@@ -529,7 +1126,14 @@ class PointTool(QgsMapToolEdit):
             add_to_last_feature(vlayer, path_ref)
             vlayer.endEditCommand()
         _, _, current_last_point_i, current_last_point_j = self.anchors[-1]
-        self.anchors[-1] = current_last_point[0], current_last_point[1], current_last_point_i, current_last_point_j
+        last_x = current_last_point.x() if hasattr(current_last_point, 'x') else current_last_point[0]
+        last_y = current_last_point.y() if hasattr(current_last_point, 'y') else current_last_point[1]
+        self.anchors[-1] = Anchor(
+            last_x,
+            last_y,
+            current_last_point_i,
+            current_last_point_j,
+        )
         self.redraw()
         self.tracking_is_active = False
 
@@ -571,30 +1175,57 @@ class PointTool(QgsMapToolEdit):
 
         # we need at least one point to draw
         if not self.anchors:
+            self.clear_preview()
             return
 
-        if self.snap_tolerance is not None and self.tracing_mode.is_tracing():
-            qgsPoint = self.toMapCoordinates(mouseEvent.pos())
-            x1, y1 = qgsPoint.x(), qgsPoint.y()
-            # i, j = get_indxs_from_raster_coords(self.geo_ref, x1, y1)
-            i, j = self.to_indexes(x1, y1)
+        qgs_point = self.toMapCoordinates(mouseEvent.pos())
+        x1, y1 = qgs_point.x(), qgs_point.y()
+
+        preview_goal = None
+
+        if self.tracing_mode.is_tracing() and self.to_indexes is not None:
             try:
-                i1, j1 = self.snap(i, j)
-            except OutsideMapError:
-                return
-            # x1, y1 = get_coords_from_raster_indxs(self.geo_ref, i1, j1)
-            x1, y1 = self.to_coords(i1, j1)
-            self.marker_snap.setCenter(QgsPointXY(x1, y1))
+                base_i, base_j = self.to_indexes(x1, y1)
+            except Exception:  # pylint: disable=broad-except
+                base_i = None
+                base_j = None
+
+            if base_i is not None and base_j is not None:
+                target_i, target_j = base_i, base_j
+                if self.snap_tolerance is not None:
+                    try:
+                        target_i, target_j = self.snap(base_i, base_j)
+                    except OutsideMapError:
+                        self.clear_preview()
+                        return
+                    snap_point = self.to_coords(target_i, target_j)
+                    if hasattr(snap_point, 'x'):
+                        self.marker_snap.setCenter(QgsPointXY(snap_point.x(), snap_point.y()))
+                    else:
+                        self.marker_snap.setCenter(QgsPointXY(snap_point[0], snap_point[1]))
+                preview_goal = (target_i, target_j)
+        else:
+            self.clear_preview()
 
         self.last_mouse_event_pos = mouseEvent.pos()
         self.update_rubber_band()
         self.redraw()
+
+        if (self.preview_enabled and self.tracing_mode.is_tracing() and
+                preview_goal is not None and len(self.anchors) >= 1):
+            start_anchor = self.anchors[-1]
+            start = self._anchor_indices(start_anchor)
+            self._queue_preview(start, preview_goal)
+        elif self.preview_enabled:
+            self.clear_preview()
 
     def abort_tracing_process(self):
         '''
         Terminate background process of tracing raster
         after the user hits Esc.
         '''
+
+        self.clear_preview()
 
         # check if we have any tasks
         if self.find_path_task is None:
@@ -670,9 +1301,22 @@ def add_to_last_feature(vlayer, points):
     last_feature = features[-1]
     fid = last_feature.id()
     geom = last_feature.geometry()
-    points = [QgsPointXY(x, y) for x, y in points]
-    geom.addPointsXY(points)
-    vlayer.changeGeometry(fid, geom)
+    new_points = [QgsPointXY(x, y) for x, y in points]
+
+    if geom.isMultipart():
+        multiline = geom.asMultiPolyline()
+        if not multiline:
+            multiline = [[]]
+        multiline[-1].extend(new_points)
+        new_geom = QgsGeometry.fromMultiPolylineXY(multiline)
+    else:
+        polyline = geom.asPolyline()
+        if polyline is None:
+            polyline = []
+        polyline.extend(new_points)
+        new_geom = QgsGeometry.fromPolylineXY(polyline)
+
+    vlayer.changeGeometry(fid, new_geom)
 
 
 def add_feature_to_vlayer(vlayer, points):
@@ -684,4 +1328,3 @@ def add_feature_to_vlayer(vlayer, points):
     polyline = [QgsPoint(x, y) for x, y in points]
     feat.setGeometry(QgsGeometry.fromPolyline(polyline))
     vlayer.addFeature(feat)
-

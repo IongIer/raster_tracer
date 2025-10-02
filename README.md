@@ -67,3 +67,10 @@ __NOTE__: `pct2rgb.py` and `gdalwarp` are part of the GDAL package.
 
 `Esc` - cancel tracing segment. Useful when raster_tracer struggles to find 
 a good path between clicked points (Usually when points are far from each other).
+
+## Vibed Changes
+
+- Reworked raster handling for large imagery: lazy windowed sampling, padded tile loads, and profiling hooks (`RASTER_TRACER_PROFILE`) keep huge rasters responsive and measurable.
+- Added asynchronous hover previews with configurable colour/width, smoothing that mirrors the final geometry, and robust cancellation/queuing so the map feedback feels instant.
+- Improved tracing ergonomics: the `T` shortcut resamples the trace colour beneath the cursor, shortcut filtering keeps layer-tree focus from eating tracing keys, and snap logic stays aligned with the active raster window.
+- Persisted dock preferences across sessions—trace colour state and value, both snap toggles with their tolerances, smoothing, and preview controls—using `QSettings`.

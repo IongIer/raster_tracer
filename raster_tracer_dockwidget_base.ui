@@ -101,6 +101,53 @@
       </property>
      </widget>
     </item>
+    <item row="8" column="0">
+     <widget class="QCheckBox" name="checkBoxPreview">
+      <property name="text">
+       <string>Preview path</string>
+      </property>
+      <property name="checked">
+       <bool>true</bool>
+      </property>
+     </widget>
+    </item>
+    <item row="8" column="1">
+     <widget class="QgsColorButton" name="previewColorButton">
+      <property name="text">
+       <string/>
+      </property>
+      <property name="defaultColor">
+       <color>
+        <red>255</red>
+        <green>20</green>
+        <blue>147</blue>
+       </color>
+      </property>
+     </widget>
+    </item>
+    <item row="9" column="0">
+     <widget class="QLabel" name="previewWidthLabel">
+      <property name="text">
+       <string>Preview width</string>
+      </property>
+     </widget>
+    </item>
+    <item row="9" column="1">
+     <widget class="QDoubleSpinBox" name="previewWidthSpinBox">
+      <property name="minimum">
+       <double>0.100000000000000</double>
+      </property>
+      <property name="maximum">
+       <double>5.000000000000000</double>
+      </property>
+      <property name="singleStep">
+       <double>0.100000000000000</double>
+      </property>
+      <property name="value">
+       <double>2.700000000000000</double>
+      </property>
+     </widget>
+    </item>
    </layout>
   </widget>
  </widget>
