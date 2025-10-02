@@ -49,13 +49,14 @@ class State:
 
         # check if he haven't any new tasks yet
         if self.pointtool.tracking_is_active:
-            self.pointtool.display_message(
-                " ",
-                "Please wait till the last segment is finished" +
-                " or terminate tracing by hitting Esc",
-                level='Critical',
-                duration=1,
-                )
+            if self.pointtool.preview_commit_request is None:
+                self.pointtool.display_message(
+                    " ",
+                    "Please wait till the last segment is finished" +
+                    " or terminate tracing by hitting Esc",
+                    level='Critical',
+                    duration=1,
+                    )
             return False
 
         # acquire point coordinates from mouseEvent
@@ -131,7 +132,7 @@ class WaitingMiddlePointState(State):
                 )
 
         else:
-            self.pointtool.trace(x1, y1, i1, j1, vlayer)
+            self.pointtool.trace(x1, y1, i1, j1, vlayer, click_pos=mouseEvent.pos())
 
     def click_rmb(self, mouseEvent, vlayer):
 

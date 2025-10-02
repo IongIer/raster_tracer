@@ -177,6 +177,13 @@ class PointTool(QgsMapToolEdit):
         self.preview_rubber_band.setLineStyle(Qt.DashLine)
         self.preview_rubber_band.hide()
 
+        self.preview_cached_path = None
+        self.preview_cached_request = None
+        self.preview_cached_pos = None
+        self.preview_pixel_tolerance = 8
+        self.preview_commit_request = None
+        self.preview_commit_vlayer = None
+
         self.tracking_is_active = False
 
         # False = not a polygon
@@ -283,6 +290,11 @@ class PointTool(QgsMapToolEdit):
         self.preview_width = width
         self.preview_rubber_band.setWidth(self.preview_width)
 
+    def _clear_preview_cache(self):
+        self.preview_cached_path = None
+        self.preview_cached_request = None
+        self.preview_cached_pos = None
+
     def clear_preview(self):
         self.preview_timer.stop()
         self.preview_pending_request = None
@@ -290,25 +302,124 @@ class PointTool(QgsMapToolEdit):
         self._cancel_preview_task()
         self.preview_sequence += 1
         self.preview_rubber_band.hide()
+        self._clear_preview_cache()
+        self.preview_commit_request = None
+        self.preview_commit_vlayer = None
 
     def _cancel_preview_task(self):
         if self.preview_task is not None:
             self.preview_task.cancel()
             self.preview_task = None
 
-    def _queue_preview(self, start, goal):
+    def _requests_equivalent(self, request_a, request_b):
+        if not request_a or not request_b:
+            return False
+        start_a = tuple(request_a.get("start") or ())
+        goal_a = tuple(request_a.get("goal") or ())
+        start_b = tuple(request_b.get("start") or ())
+        goal_b = tuple(request_b.get("goal") or ())
+        return start_a == start_b and goal_a == goal_b
+
+    def _request_matches_points(self, request, start_point, end_point):
+        if not request:
+            return False
+        return (
+            tuple(request.get("start") or ()) == tuple(start_point) and
+            tuple(request.get("goal") or ()) == tuple(end_point)
+        )
+
+    def _take_preview_path_if_valid(self, start_point, end_point, click_pos):
+        if not self.preview_enabled or self.preview_cached_path is None:
+            return None
+        if not self.preview_rubber_band.isVisible():
+            return None
+        if not self._request_matches_points(self.preview_cached_request, start_point, end_point):
+            return None
+        if click_pos is None:
+            return None
+        cached_pos = self.preview_cached_pos
+        if cached_pos is None:
+            return None
+        dx = click_pos.x() - cached_pos[0]
+        dy = click_pos.y() - cached_pos[1]
+        if (dx * dx + dy * dy) > (self.preview_pixel_tolerance ** 2):
+            return None
+        return [tuple(pt) for pt in self.preview_cached_path]
+
+    def _has_inflight_preview_for(self, start_point, end_point):
+        if self._request_matches_points(self.preview_pending_request, start_point, end_point):
+            return True
+        if self.preview_task is not None and self._request_matches_points(self.preview_last_request, start_point, end_point):
+            return True
+        return False
+
+    def _ensure_preview_inflight_started(self):
+        if self.preview_task is not None:
+            return
+        if self.preview_pending_request is None:
+            return
+        self.preview_timer.stop()
+        self._execute_preview_request()
+
+    def _consume_preview_commit(self, global_path):
+        request = self.preview_commit_request
+        vlayer = self.preview_commit_vlayer
+        self.preview_commit_request = None
+        self.preview_commit_vlayer = None
+        if vlayer is None or not global_path:
+            self.tracking_is_active = False
+            return
+        path_to_draw = [tuple(node) for node in global_path]
+        self.tracking_is_active = True
+        self.clear_preview()
+        self.draw_path(path_to_draw, vlayer, was_tracing=True)
+
+    def _fallback_trace_after_preview_failure(self):
+        if self.preview_commit_request is None:
+            return
+        request = self.preview_commit_request
+        vlayer = self.preview_commit_vlayer
+        self.preview_commit_request = None
+        self.preview_commit_vlayer = None
+        if vlayer is None:
+            self.tracking_is_active = False
+            return
+        start = request.get("start")
+        goal = request.get("goal")
+        if start is None or goal is None:
+            self.tracking_is_active = False
+            return
+        self.clear_preview()
+        try:
+            self.trace_over_image(start, goal, do_it_as_task=True, vlayer=vlayer)
+        except OutsideMapError:
+            self.tracking_is_active = False
+
+    def _queue_preview(self, start, goal, screen_pos=None):
         if not self.preview_enabled:
             return
         if start == goal:
             self.clear_preview()
             return
+        start_i, start_j = int(start[0]), int(start[1])
+        goal_i, goal_j = int(goal[0]), int(goal[1])
         request = {
-            "start": start,
-            "goal": goal,
+            "start": (start_i, start_j),
+            "goal": (goal_i, goal_j),
+            "screen_pos": (
+                int(screen_pos.x()),
+                int(screen_pos.y()),
+            ) if screen_pos is not None else None,
         }
-        if request == self.preview_pending_request and self.preview_timer.isActive():
+        if (
+            self.preview_timer.isActive() and
+            self._requests_equivalent(self.preview_pending_request, request)
+        ):
             return
-        if request == self.preview_last_request and self.preview_task is None:
+        if (
+            self.preview_task is None and
+            self._requests_equivalent(self.preview_last_request, request)
+        ):
             return
         self.preview_pending_request = request
         if self.preview_timer.isActive():
@@ -322,6 +433,7 @@ class PointTool(QgsMapToolEdit):
         self.preview_pending_request = None
         if request is None:
             return
+        request = dict(request)
         self.preview_last_request = request
         self._start_preview_task(request)
 
@@ -344,30 +456,51 @@ class PointTool(QgsMapToolEdit):
         self.preview_sequence += 1
         current_sequence = self.preview_sequence
 
-        def callback(path, _vlayer, seq=current_sequence, origin=preparation["origin"]):
-            self._preview_task_callback(path, origin[0], origin[1], seq)
+        current_request = dict(request)
+
+        def callback(
+                path,
+                _vlayer,
+                seq=current_sequence,
+                origin=preparation["origin"],
+                req=current_request):
+            self._preview_task_callback(path, origin[0], origin[1], seq, req)
 
         task = FindPathTask(grid, local_start, local_goal, callback, None)
         self.preview_task = task
         QgsApplication.taskManager().addTask(task)
 
-    def _preview_task_callback(self, path, origin_i, origin_j, sequence_id):
+    def _preview_task_callback(self, path, origin_i, origin_j, sequence_id, request):
         if sequence_id != self.preview_sequence or not self.preview_enabled:
             return
         self.preview_task = None
         if not path:
             self.preview_rubber_band.hide()
+            self.preview_cached_path = None
+            if (
+                self.preview_commit_request is not None and
+                self._requests_equivalent(self.preview_commit_request, request)
+            ):
+                self._fallback_trace_after_preview_failure()
             return
 
         global_path = [
-            (local_i + origin_i, local_j + origin_j) for local_i, local_j in path
+            (int(local_i + origin_i), int(local_j + origin_j))
+            for local_i, local_j in path
         ]
 
-        if self.smooth_line and len(global_path) > 2:
-            smoothed = smooth(global_path, size=5)
+        self.preview_cached_path = [tuple(node) for node in global_path]
+        cached_request = dict(request)
+        self.preview_cached_request = cached_request
+        self.preview_cached_pos = request.get("screen_pos")
+
+        path_for_preview = list(global_path)
+
+        if self.smooth_line and len(path_for_preview) > 2:
+            smoothed = smooth(path_for_preview, size=5)
             smoothed = simplify(smoothed)
         else:
-            smoothed = global_path
+            smoothed = path_for_preview
 
         points = []
         for global_i, global_j in smoothed:
@@ -378,12 +511,23 @@ class PointTool(QgsMapToolEdit):
 
         if not points:
             self.preview_rubber_band.hide()
+            if (
+                self.preview_commit_request is not None and
+                self._requests_equivalent(self.preview_commit_request, request)
+            ):
+                self._fallback_trace_after_preview_failure()
             return
 
         geometry = QgsGeometry.fromPolylineXY(points)
         self.preview_rubber_band.setToGeometry(geometry, None)
         if self.preview_enabled:
             self.preview_rubber_band.show()
+
+        if (
+            self.preview_commit_request is not None and
+            self._requests_equivalent(self.preview_commit_request, request)
+        ):
+            self._consume_preview_commit(global_path)
 
     def _ensure_sampler(self):
         if self.raster_sampler is None and self.rlayer is not None:
@@ -965,7 +1109,7 @@ class PointTool(QgsMapToolEdit):
             path = [(i + origin_i, j + origin_j) for i, j in path]
         self.draw_path(path, vlayer)
 
-    def trace(self, x1, y1, i1, j1, vlayer):
+    def trace(self, x1, y1, i1, j1, vlayer, click_pos=None):
         '''
         Traces path from last point to given point.
         In case tracing is inactive just creates
@@ -980,8 +1124,30 @@ class PointTool(QgsMapToolEdit):
                     return
 
             _, _, i0, j0 = self.anchors[-2]
-            start_point = i0, j0
-            end_point = i1, j1
+            start_point = (int(i0), int(j0))
+            end_point = (int(i1), int(j1))
+
+            preview_path = self._take_preview_path_if_valid(start_point, end_point, click_pos)
+            if preview_path is not None:
+                self.preview_commit_request = None
+                self.preview_commit_vlayer = None
+                self.tracking_is_active = True
+                self.clear_preview()
+                self.draw_path(preview_path, vlayer, was_tracing=True)
+                return
+
+            if self.preview_enabled and self._has_inflight_preview_for(start_point, end_point):
+                self.preview_commit_request = {
+                    "start": start_point,
+                    "goal": end_point,
+                }
+                self.preview_commit_vlayer = vlayer
+                self.tracking_is_active = True
+                self._ensure_preview_inflight_started()
+                return
+
+            self.preview_commit_request = None
+            self.preview_commit_vlayer = None
             try:
                 self.clear_preview()
                 self.trace_over_image(start_point,
@@ -991,6 +1157,8 @@ class PointTool(QgsMapToolEdit):
             except OutsideMapError:
                 pass
         else:
+            self.preview_commit_request = None
+            self.preview_commit_vlayer = None
             self.draw_path(
                 None,
                 vlayer,
@@ -1104,6 +1272,7 @@ class PointTool(QgsMapToolEdit):
         self.preview_rubber_band.hide()
         self.preview_pending_request = None
         self.preview_last_request = None
+        self._clear_preview_cache()
 
         transform = QgsCoordinateTransform(QgsProject.instance().crs(),
                                            vlayer.crs(),
@@ -1224,7 +1393,7 @@ class PointTool(QgsMapToolEdit):
                 preview_goal is not None and len(self.anchors) >= 1):
             start_anchor = self.anchors[-1]
             start = self._anchor_indices(start_anchor)
-            self._queue_preview(start, preview_goal)
+            self._queue_preview(start, preview_goal, mouseEvent.pos())
         elif self.preview_enabled:
             self.clear_preview()
 
