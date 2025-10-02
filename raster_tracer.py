@@ -103,6 +103,21 @@ class RasterTracer:
         self.dockwidget = None
         self.layer_tree_filter = None
 
+    def _coerce_spin_box_int(self, candidate_value, spin_box):
+        """Return a spin box-friendly integer from persisted settings."""
+        default_value = spin_box.value()
+        if candidate_value in (None, ''):
+            return default_value
+        try:
+            coerced = int(round(float(candidate_value)))
+        except (TypeError, ValueError):
+            return default_value
+        minimum = spin_box.minimum()
+        maximum = spin_box.maximum()
+        if maximum >= minimum:
+            coerced = max(minimum, min(coerced, maximum))
+        return coerced
+
     # noinspection PyMethodMayBeStatic
     def tr(self, message):
         """Get the translation for a string using Qt translation API.
@@ -338,11 +353,11 @@ class RasterTracer:
         self.dockwidget.mColorButton.blockSignals(False)
 
         snap_enabled = settings.value('RasterTracer/snap/enabled', False, type=bool)
-        snap_value = settings.value('RasterTracer/snap/tolerance', self.dockwidget.mQgsSpinBox.value())
-        try:
-            snap_value = float(snap_value)
-        except (TypeError, ValueError):
-            snap_value = self.dockwidget.mQgsSpinBox.value()
+        snap_value = settings.value(
+            'RasterTracer/snap/tolerance',
+            self.dockwidget.mQgsSpinBox.value(),
+        )
+        snap_value = self._coerce_spin_box_int(snap_value, self.dockwidget.mQgsSpinBox)
 
         self.dockwidget.checkBoxSnap.blockSignals(True)
         self.dockwidget.checkBoxSnap.setChecked(snap_enabled)
@@ -353,11 +368,11 @@ class RasterTracer:
         self.dockwidget.mQgsSpinBox.blockSignals(False)
 
         snap2_enabled = settings.value('RasterTracer/snap2/enabled', False, type=bool)
-        snap2_value = settings.value('RasterTracer/snap2/tolerance', self.dockwidget.SpinBoxSnap.value())
-        try:
-            snap2_value = float(snap2_value)
-        except (TypeError, ValueError):
-            snap2_value = self.dockwidget.SpinBoxSnap.value()
+        snap2_value = settings.value(
+            'RasterTracer/snap2/tolerance',
+            self.dockwidget.SpinBoxSnap.value(),
+        )
+        snap2_value = self._coerce_spin_box_int(snap2_value, self.dockwidget.SpinBoxSnap)
 
         self.dockwidget.checkBoxSnap2.blockSignals(True)
         self.dockwidget.checkBoxSnap2.setChecked(snap2_enabled)
@@ -416,9 +431,9 @@ class RasterTracer:
         settings = QSettings()
         snap_enabled = self.dockwidget.checkBoxSnap.isChecked()
         try:
-            snap_value = float(self.dockwidget.mQgsSpinBox.value())
+            snap_value = int(self.dockwidget.mQgsSpinBox.value())
         except (TypeError, ValueError):
-            snap_value = 1.0
+            snap_value = int(self.dockwidget.mQgsSpinBox.minimum())
         settings.setValue('RasterTracer/snap/enabled', snap_enabled)
         settings.setValue('RasterTracer/snap/tolerance', snap_value)
 
@@ -433,9 +448,9 @@ class RasterTracer:
         settings = QSettings()
         snap_enabled = self.dockwidget.checkBoxSnap2.isChecked()
         try:
-            snap_value = float(self.dockwidget.SpinBoxSnap.value())
+            snap_value = int(self.dockwidget.SpinBoxSnap.value())
         except (TypeError, ValueError):
-            snap_value = 1.0
+            snap_value = int(self.dockwidget.SpinBoxSnap.minimum())
         settings.setValue('RasterTracer/snap2/enabled', snap_enabled)
         settings.setValue('RasterTracer/snap2/tolerance', snap_value)
 
