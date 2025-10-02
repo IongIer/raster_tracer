@@ -321,6 +321,62 @@ class RasterTracer:
         self.dockwidget.previewColorButton.setEnabled(preview_enabled)
         self.dockwidget.previewWidthSpinBox.setEnabled(preview_enabled)
 
+        color_enabled = settings.value('RasterTracer/color/enabled', False, type=bool)
+        color_value = settings.value('RasterTracer/color/value', None)
+        stored_color = self.dockwidget.mColorButton.color()
+        if color_value is not None:
+            candidate_color = QColor(color_value)
+            if candidate_color.isValid():
+                stored_color = candidate_color
+
+        self.dockwidget.checkBoxColor.blockSignals(True)
+        self.dockwidget.checkBoxColor.setChecked(color_enabled)
+        self.dockwidget.checkBoxColor.blockSignals(False)
+
+        self.dockwidget.mColorButton.blockSignals(True)
+        self.dockwidget.mColorButton.setColor(stored_color)
+        self.dockwidget.mColorButton.blockSignals(False)
+
+        snap_enabled = settings.value('RasterTracer/snap/enabled', False, type=bool)
+        snap_value = settings.value('RasterTracer/snap/tolerance', self.dockwidget.mQgsSpinBox.value())
+        try:
+            snap_value = float(snap_value)
+        except (TypeError, ValueError):
+            snap_value = self.dockwidget.mQgsSpinBox.value()
+
+        self.dockwidget.checkBoxSnap.blockSignals(True)
+        self.dockwidget.checkBoxSnap.setChecked(snap_enabled)
+        self.dockwidget.checkBoxSnap.blockSignals(False)
+
+        self.dockwidget.mQgsSpinBox.blockSignals(True)
+        self.dockwidget.mQgsSpinBox.setValue(snap_value)
+        self.dockwidget.mQgsSpinBox.blockSignals(False)
+
+        snap2_enabled = settings.value('RasterTracer/snap2/enabled', False, type=bool)
+        snap2_value = settings.value('RasterTracer/snap2/tolerance', self.dockwidget.SpinBoxSnap.value())
+        try:
+            snap2_value = float(snap2_value)
+        except (TypeError, ValueError):
+            snap2_value = self.dockwidget.SpinBoxSnap.value()
+
+        self.dockwidget.checkBoxSnap2.blockSignals(True)
+        self.dockwidget.checkBoxSnap2.setChecked(snap2_enabled)
+        self.dockwidget.checkBoxSnap2.blockSignals(False)
+
+        self.dockwidget.SpinBoxSnap.blockSignals(True)
+        self.dockwidget.SpinBoxSnap.setValue(snap2_value)
+        self.dockwidget.SpinBoxSnap.blockSignals(False)
+
+        smooth_enabled = settings.value('RasterTracer/trace/smooth', True, type=bool)
+        self.dockwidget.checkBoxSmooth.blockSignals(True)
+        self.dockwidget.checkBoxSmooth.setChecked(smooth_enabled)
+        self.dockwidget.checkBoxSmooth.blockSignals(False)
+
+        self.checkBoxSnap_changed()
+        self.checkBoxSnap2_changed()
+        self.checkBoxSmooth_changed()
+        self.checkBoxColor_changed()
+
         excluded_layers = [l for l in QgsProject().instance().mapLayers().values() 
                                                     if isinstance(l, QgsVectorLayer)]
         self.dockwidget.mMapLayerComboBox.setExceptedLayerList(excluded_layers)
@@ -337,7 +393,6 @@ class RasterTracer:
         # self.last_maptool = self.iface.mapCanvas().mapTool()
 
         self.dockwidget.checkBoxSmooth.stateChanged.connect(self.checkBoxSmooth_changed)
-        self.dockwidget.checkBoxSmooth.setChecked(True)
 
         self.dockwidget.checkBoxSnap2.stateChanged.connect(self.checkBoxSnap2_changed)
         self.dockwidget.SpinBoxSnap.valueChanged.connect(self.checkBoxSnap2_changed)
@@ -352,22 +407,41 @@ class RasterTracer:
         self.checkBoxColor_changed()
 
     def checkBoxSmooth_changed(self):
-        self.tool_identify.smooth_line = (self.dockwidget.checkBoxSmooth.isChecked() is True)
+        is_checked = self.dockwidget.checkBoxSmooth.isChecked() is True
+        self.tool_identify.smooth_line = is_checked
+        settings = QSettings()
+        settings.setValue('RasterTracer/trace/smooth', is_checked)
 
     def checkBoxSnap_changed(self):
-        if self.dockwidget.checkBoxSnap.isChecked():
+        settings = QSettings()
+        snap_enabled = self.dockwidget.checkBoxSnap.isChecked()
+        try:
+            snap_value = float(self.dockwidget.mQgsSpinBox.value())
+        except (TypeError, ValueError):
+            snap_value = 1.0
+        settings.setValue('RasterTracer/snap/enabled', snap_enabled)
+        settings.setValue('RasterTracer/snap/tolerance', snap_value)
+
+        if snap_enabled:
             self.dockwidget.mQgsSpinBox.setEnabled(True)
-            snap_tolerance = self.dockwidget.mQgsSpinBox.value()
-            self.tool_identify.snap_tolerance_changed(snap_tolerance)
+            self.tool_identify.snap_tolerance_changed(snap_value)
         else:
             self.dockwidget.mQgsSpinBox.setEnabled(False)
             self.tool_identify.snap_tolerance_changed(None)
 
     def checkBoxSnap2_changed(self):
-        if self.dockwidget.checkBoxSnap2.isChecked():
+        settings = QSettings()
+        snap_enabled = self.dockwidget.checkBoxSnap2.isChecked()
+        try:
+            snap_value = float(self.dockwidget.SpinBoxSnap.value())
+        except (TypeError, ValueError):
+            snap_value = 1.0
+        settings.setValue('RasterTracer/snap2/enabled', snap_enabled)
+        settings.setValue('RasterTracer/snap2/tolerance', snap_value)
+
+        if snap_enabled:
             self.dockwidget.SpinBoxSnap.setEnabled(True)
-            snap_tolerance = self.dockwidget.SpinBoxSnap.value()
-            self.tool_identify.snap2_tolerance_changed(snap_tolerance)
+            self.tool_identify.snap2_tolerance_changed(snap_value)
         else:
             self.dockwidget.SpinBoxSnap.setEnabled(False)
             self.tool_identify.snap2_tolerance_changed(None)
@@ -433,12 +507,24 @@ class RasterTracer:
         self.checkBoxColor_changed()
 
     def checkBoxColor_changed(self):
-        if self.dockwidget.checkBoxColor.isChecked():
-            self.dockwidget.mColorButton.setEnabled(True)
-            self.dockwidget.checkBoxSnap.setEnabled(True)
-            color = self.dockwidget.mColorButton.color()
+        enabled = self.dockwidget.checkBoxColor.isChecked()
+        self.dockwidget.mColorButton.setEnabled(enabled)
+        self.dockwidget.checkBoxSnap.setEnabled(enabled)
+
+        color = self.dockwidget.mColorButton.color()
+        if not isinstance(color, QColor):
+            color = QColor(color)
+
+        self.dockwidget.mQgsSpinBox.setEnabled(
+            enabled and self.dockwidget.checkBoxSnap.isChecked()
+        )
+
+        settings = QSettings()
+        settings.setValue('RasterTracer/color/enabled', enabled)
+        if color.isValid():
+            settings.setValue('RasterTracer/color/value', color.name(QColor.HexArgb))
+
+        if enabled:
             self.tool_identify.trace_color_changed(color)
         else:
-            self.dockwidget.mColorButton.setEnabled(False)
-            self.dockwidget.checkBoxSnap.setEnabled(False)
             self.tool_identify.trace_color_changed(False)
