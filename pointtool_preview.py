@@ -128,6 +128,10 @@ class TracePreviewController:
         self._commit_request = None
         self._commit_vlayer = None
 
+    def has_pending_commit(self) -> bool:
+        """Return True when a queued preview needs to be committed."""
+        return self._commit_request is not None
+
     def ensure_inflight_started(self) -> None:
         if self._task is not None:
             return

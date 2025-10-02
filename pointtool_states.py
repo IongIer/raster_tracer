@@ -49,7 +49,7 @@ class State:
 
         # check if he haven't any new tasks yet
         if self.pointtool.tracking_is_active:
-            if self.pointtool.preview_commit_request is None:
+            if not self.pointtool.has_pending_preview_commit():
                 self.pointtool.display_message(
                     " ",
                     "Please wait till the last segment is finished" +
@@ -76,6 +76,17 @@ class State:
             x1, y1 = self.pointtool.snap_to_itself(x1, y1, self.pointtool.snap2_tolerance)
         i1, j1 = self.pointtool.to_indexes(x1, y1)
         self.pointtool.add_anchor_points(x1, y1, i1, j1)
+
+        # Ensure the rubber band has a stable origin even if previous anchors
+        # were pruned and the state didn't reset yet.
+        if isinstance(self, WaitingMiddlePointState) and len(self.pointtool.anchors) == 1:
+            QgsMessageLog.logMessage(
+                "[state] Resetting to first point after anchor loss",
+                "RasterTracer",
+                Qgis.Warning,
+            )
+            self.pointtool.change_state(WaitingFirstPointState)
+            return False
 
         return True
 

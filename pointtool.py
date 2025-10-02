@@ -256,6 +256,9 @@ class PointTool(QgsMapToolEdit):
     def _queue_preview(self, start, goal, screen_pos=None):
         self.preview_controller.queue(start, goal, screen_pos)
 
+    def has_pending_preview_commit(self):
+        return self.preview_controller.has_pending_commit()
+
     def _ensure_sampler(self):
         self.raster_context.ensure_sampler()
 
@@ -539,6 +542,13 @@ class PointTool(QgsMapToolEdit):
                 except OutsideMapError:
                     return
 
+            if len(self.anchors) < 2:
+                QgsMessageLog.logMessage(
+                    "[trace] Ignoring trace request – insufficient anchors",
+                    "RasterTracer",
+                    Qgis.Warning,
+                )
+                return
             _, _, i0, j0 = self.anchors[-2]
             start_point = (int(i0), int(j0))
             end_point = (int(i1), int(j1))
