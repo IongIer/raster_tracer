@@ -11,11 +11,18 @@ import os
 import time
 import cProfile
 import pstats
+from collections import namedtuple
 
 from qgis.core import QgsTask, QgsMessageLog, Qgis
 
 
 PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
+
+
+FindPathCoreResult = namedtuple(
+    "FindPathCoreResult",
+    ["path", "cost", "profile_stats", "cancelled"],
+)
 
 class PriorityQueue:
     def __init__(self):
@@ -52,8 +59,42 @@ def get_neighbors(size_i, size_j, ij):
 def get_cost(array, current, next):
     return array[next]
 
-def FindPathFunction(graph, start, goal):
+def _finalize_profile(profiler, start_time, explored_nodes, cancelled):
+    if profiler is None or start_time is None:
+        return None
+    profiler.disable()
+    duration = time.perf_counter() - start_time
+    if cancelled:
+        profile_output = "Task cancelled before completion"
+    else:
+        stats_stream = io.StringIO()
+        pstats.Stats(profiler, stream=stats_stream).strip_dirs().sort_stats('cumtime').print_stats(15)
+        profile_output = stats_stream.getvalue()
+    return {
+        "duration": duration,
+        "nodes": explored_nodes,
+        "profile": profile_output,
+    }
 
+
+def _log_profile_stats(label, stats):
+    if not stats:
+        return
+    QgsMessageLog.logMessage(
+        f"[profiling] {label} duration={stats['duration']:.3f}s nodes={stats['nodes']}",
+        "RasterTracer",
+        Qgis.Info,
+    )
+    profile_text = stats.get("profile")
+    if profile_text:
+        QgsMessageLog.logMessage(
+            profile_text,
+            "RasterTracer",
+            Qgis.Info,
+        )
+
+
+def _find_path_core(graph, start, goal, cancel_cb=None):
     profiler = None
     start_time = None
     if PROFILE_ENABLED:
@@ -63,10 +104,8 @@ def FindPathFunction(graph, start, goal):
 
     frontier = PriorityQueue()
     frontier.put(start, 0)
-    came_from = {}
-    cost_so_far = {}
-    came_from[start] = None
-    cost_so_far[start] = 0
+    came_from = {start: None}
+    cost_so_far = {start: 0}
 
     size_i, size_j = graph.shape
 
@@ -77,7 +116,14 @@ def FindPathFunction(graph, start, goal):
             break
 
         for next in get_neighbors(size_i, size_j, current):
-            # check isCanceled() to handle cancellation
+            if cancel_cb is not None and cancel_cb():
+                profile_stats = _finalize_profile(
+                    profiler,
+                    start_time,
+                    len(cost_so_far),
+                    cancelled=True,
+                )
+                return FindPathCoreResult(None, None, profile_stats, True)
 
             new_cost = cost_so_far[current] + get_cost(graph, current, next)
             if next not in cost_so_far or new_cost < cost_so_far[next]:
@@ -86,25 +132,28 @@ def FindPathFunction(graph, start, goal):
                 frontier.put(next, priority)
                 came_from[next] = current
 
-    path = reconstruct_path(came_from, start, goal)
+    if goal in came_from:
+        path = reconstruct_path(came_from, start, goal)
+        cost = cost_so_far[goal]
+    else:
+        path = None
+        cost = None
 
-    if PROFILE_ENABLED and profiler is not None:
-        profiler.disable()
-        duration = time.perf_counter() - start_time
-        stats_stream = io.StringIO()
-        pstats.Stats(profiler, stream=stats_stream).strip_dirs().sort_stats('cumtime').print_stats(15)
-        QgsMessageLog.logMessage(
-            f"[profiling] FindPathFunction duration={duration:.3f}s nodes={len(cost_so_far)}",
-            "RasterTracer",
-            Qgis.Info,
-        )
-        QgsMessageLog.logMessage(
-            stats_stream.getvalue(),
-            "RasterTracer",
-            Qgis.Info,
-        )
+    profile_stats = _finalize_profile(
+        profiler,
+        start_time,
+        len(cost_so_far),
+        cancelled=False,
+    )
 
-    return path, cost_so_far[goal]
+    return FindPathCoreResult(path, cost, profile_stats, False)
+
+
+def FindPathFunction(graph, start, goal):
+    result = _find_path_core(graph, start, goal)
+    if PROFILE_ENABLED and result.profile_stats:
+        _log_profile_stats("FindPathFunction", result.profile_stats)
+    return result.path, result.cost
 
 
 class FindPathTask(QgsTask):
@@ -131,6 +180,7 @@ class FindPathTask(QgsTask):
         self.start = start
         self.goal = goal
         self.path = None
+        self.cost = None
         self.callback = callback
         self.vlayer = vlayer
         self.profile_stats = None
@@ -145,61 +195,12 @@ class FindPathTask(QgsTask):
         start = self.start
         goal = self.goal
 
-        profiler = None
-        start_time = None
-        if PROFILE_ENABLED:
-            profiler = cProfile.Profile()
-            profiler.enable()
-            start_time = time.perf_counter()
-
-        frontier = PriorityQueue()
-        frontier.put(start, 0)
-        came_from = {}
-        cost_so_far = {}
-        came_from[start] = None
-        cost_so_far[start] = 0
-
-        size_i, size_j = graph.shape
-
-        while not frontier.empty():
-            current = frontier.get()
-
-            if current == goal:
-                break
-
-            for next in get_neighbors(size_i, size_j, current):
-                # check isCanceled() to handle cancellation
-                if self.isCanceled():
-                    if PROFILE_ENABLED and profiler is not None:
-                        profiler.disable()
-                        duration = time.perf_counter() - start_time
-                        self.profile_stats = {
-                            "duration": duration,
-                            "nodes": len(cost_so_far),
-                            "profile": "Task cancelled before completion",
-                        }
-                    return False
-
-                new_cost = cost_so_far[current] + get_cost(graph, current, next)
-                if next not in cost_so_far or new_cost < cost_so_far[next]:
-                    cost_so_far[next] = new_cost
-                    priority = new_cost + heuristic(goal, next)
-                    frontier.put(next, priority)
-                    came_from[next] = current
-
-        self.path = reconstruct_path(came_from, start, goal)
-
-        if PROFILE_ENABLED and profiler is not None:
-            profiler.disable()
-            duration = time.perf_counter() - start_time
-            stats_stream = io.StringIO()
-            pstats.Stats(profiler, stream=stats_stream).strip_dirs().sort_stats('cumtime').print_stats(15)
-            self.profile_stats = {
-                "duration": duration,
-                "nodes": len(cost_so_far),
-                "profile": stats_stream.getvalue(),
-            }
-
+        result = _find_path_core(graph, start, goal, cancel_cb=self.isCanceled)
+        self.profile_stats = result.profile_stats
+        self.path = result.path
+        self.cost = result.cost
+        if result.cancelled:
+            return False
         return True
 
     def finished(self, result):
@@ -211,17 +212,7 @@ class FindPathTask(QgsTask):
             self.callback(self.path, self.vlayer)
 
         if PROFILE_ENABLED and self.profile_stats:
-            QgsMessageLog.logMessage(
-                f"[profiling] FindPathTask duration={self.profile_stats['duration']:.3f}s nodes={self.profile_stats['nodes']}",
-                "RasterTracer",
-                Qgis.Info,
-            )
-            if self.profile_stats['profile']:
-                QgsMessageLog.logMessage(
-                    self.profile_stats['profile'],
-                    "RasterTracer",
-                    Qgis.Info,
-                )
+            _log_profile_stats("FindPathTask", self.profile_stats)
             self.profile_stats = None
 
 

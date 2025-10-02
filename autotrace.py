@@ -1,6 +1,6 @@
 from math import atan2, cos, sin, radians
 
-from qgis.core import QgsTask, QgsMessageLog
+from qgis.core import QgsTask, QgsMessageLog, Qgis
 
 
 class AutotraceSubTask(QgsTask):
@@ -60,11 +60,20 @@ class AutotraceSubTask(QgsTask):
 
         for point in points:
             i2, j2 = point
-            # x2, y2 = self.pointtool.to_coords(i2, j2)
 
             path, cost = self.pointtool.trace_over_image((i1, j1), (i2, j2))
+            if path is None or cost is None:
+                continue
             costs.append(cost)
             paths.append(path)
+
+        if not paths:
+            QgsMessageLog.logMessage(
+                "[autotrace] Unable to determine continuation path",
+                "RasterTracer",
+                Qgis.Warning,
+            )
+            return []
 
         min_cost = min(costs)
         min_cost_index = costs.index(min_cost)

@@ -4,7 +4,7 @@ Module contains States for pointtool.
 
 from math import atan2, cos, sin, radians
 
-from qgis.core import QgsApplication
+from qgis.core import QgsApplication, QgsMessageLog, Qgis
 
 from .autotrace import AutotraceSubTask
 
@@ -188,8 +188,18 @@ class AutoFollowingLineState(State):
             x2, y2 = self.pointtool.to_coords(i2, j2)
 
             path, cost = self.pointtool.trace_over_image((i1, j1), (i2, j2))
+            if path is None or cost is None:
+                continue
             costs.append(cost)
             paths.append(path)
+
+        if not paths:
+            QgsMessageLog.logMessage(
+                "[autofollow] Unable to find continuation path",
+                "RasterTracer",
+                Qgis.Warning,
+            )
+            return
 
         min_cost = min(costs)
         min_cost_index = costs.index(min_cost)
