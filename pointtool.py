@@ -38,6 +38,7 @@ SHORTCUT_KEYS = {
     Qt.Key_Backspace,
     Qt.Key_S,
     Qt.Key_Escape,
+    Qt.Key_T,
 }
 
 PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
@@ -103,12 +104,21 @@ class PointTool(QgsMapToolEdit):
         self.clear_preview()
         self.deactivated.emit()
 
-    def __init__(self, canvas, iface, turn_off_snap, smooth=False):
+    def __init__(
+            self,
+            canvas,
+            iface,
+            turn_off_snap,
+            smooth=False,
+            ensure_trace_color_enabled=None,
+            set_trace_color=None):
         '''
         canvas - link to the QgsCanvas of the application
         iface - link to the Qgis Interface
         turn_off_snap - flag sets snapping to the nearest color
         smooth - flag sets smoothing of the traced path
+        ensure_trace_color_enabled - callback enabling trace-color mode in UI
+        set_trace_color - callback syncing sampled color back to UI control
         '''
 
         self.iface = iface
@@ -123,6 +133,8 @@ class PointTool(QgsMapToolEdit):
 
         self.turn_off_snap = turn_off_snap
         self.smooth_line = smooth
+        self._enable_trace_color_cb = ensure_trace_color_enabled
+        self._set_trace_color_cb = set_trace_color
 
         # possible variants: gray_diff, as_is, color_diff (using v from hsv)
         self.grid_conversion = "gray_diff"
@@ -139,6 +151,10 @@ class PointTool(QgsMapToolEdit):
         self.grid = None
         self.sample = None
         self.raster_sampler = None
+        self.to_indexes = None
+        self.to_coords = None
+        self.to_coords_provider = None
+        self.to_coords_provider2 = None
         self.window_origin = None
         self.window_shape = None
         self.window_padding = 1024
@@ -740,6 +756,8 @@ class PointTool(QgsMapToolEdit):
         elif e.key() == Qt.Key_Escape:
             # Abort tracing process
             self.abort_tracing_process()
+        elif e.key() == Qt.Key_T:
+            self._handle_trace_color_shortcut()
 
     def add_anchor_points(self, x1, y1, i1, j1):
         '''
@@ -755,6 +773,87 @@ class PointTool(QgsMapToolEdit):
 
     def handled_shortcut_keys(self):
         return SHORTCUT_KEYS
+
+    def _handle_trace_color_shortcut(self):
+        if self.to_indexes is None:
+            QgsMessageLog.logMessage(
+                "[shortcut] Ignoring 'T' – no raster selected",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return
+
+        if self.last_mouse_event_pos is None:
+            return
+
+        qgs_point = self.toMapCoordinates(self.last_mouse_event_pos)
+        x, y = qgs_point.x(), qgs_point.y()
+
+        try:
+            i, j = self.to_indexes(x, y)
+        except Exception:  # pylint: disable=broad-except
+            QgsMessageLog.logMessage(
+                "[shortcut] Ignoring 'T' – point outside raster extent",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return
+
+        color = self._sample_color_at_indices(i, j)
+        if color is None:
+            return
+
+        if self._enable_trace_color_cb is not None:
+            self._enable_trace_color_cb()
+
+        if self._set_trace_color_cb is not None:
+            self._set_trace_color_cb(color)
+        else:
+            self.trace_color_changed(color)
+
+        if not self.tracing_mode.is_tracing():
+            self.tracing_mode = TracingModes.PATH
+            self.update_rubber_band()
+
+    def _sample_color_at_indices(self, i, j):
+        self._ensure_window_for_indices([(i, j)], reason="shortcut-sample")
+
+        if self.sample is None:
+            QgsMessageLog.logMessage(
+                "[shortcut] Sampling failed – raster data unavailable",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return None
+
+        try:
+            local_i, local_j = self._to_local_indices(i, j)
+        except OutsideMapError:
+            QgsMessageLog.logMessage(
+                "[shortcut] Sampling failed – indices outside window",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return None
+
+        try:
+            r_band, g_band, b_band = self.sample
+            r_val = float(r_band[local_i, local_j])
+            g_val = float(g_band[local_i, local_j])
+            b_val = float(b_band[local_i, local_j])
+        except (IndexError, TypeError, ValueError):
+            QgsMessageLog.logMessage(
+                "[shortcut] Sampling failed – invalid pixel data",
+                "RasterTracer",
+                Qgis.Info,
+            )
+            return None
+
+        r_int = int(np.clip(round(r_val), 0, 255))
+        g_int = int(np.clip(round(g_val), 0, 255))
+        b_int = int(np.clip(round(b_val), 0, 255))
+
+        return QColor(r_int, g_int, b_int)
 
     def has_active_trace(self):
         return bool(self.anchors) or self.tracking_is_active

@@ -271,7 +271,13 @@ class RasterTracer:
 
         self.map_canvas = self.iface.mapCanvas()
         # vlayer = self.iface.layerTreeView().selectedLayers()[0]
-        self.tool_identify = PointTool(self.map_canvas, self.iface, self.turn_off_snap)
+        self.tool_identify = PointTool(
+            self.map_canvas,
+            self.iface,
+            self.turn_off_snap,
+            ensure_trace_color_enabled=self.ensure_trace_color_enabled,
+            set_trace_color=self.set_trace_color_from_tool,
+        )
         # self.map_canvas.setMapTool(self.tool_identify)
         self.activate_map_tool()
 
@@ -393,6 +399,38 @@ class RasterTracer:
 
     def turn_off_snap(self):
         self.dockwidget.checkBoxSnap.nextCheckState()
+
+    def ensure_trace_color_enabled(self):
+        if self.dockwidget is None:
+            return
+
+        checkbox = self.dockwidget.checkBoxColor
+        if checkbox.isChecked():
+            return
+
+        checkbox.blockSignals(True)
+        try:
+            checkbox.setChecked(True)
+        finally:
+            checkbox.blockSignals(False)
+
+        self.checkBoxColor_changed()
+
+    def set_trace_color_from_tool(self, color):
+        if self.dockwidget is None:
+            return
+
+        if not isinstance(color, QColor):
+            color = QColor(color)
+
+        color_button = self.dockwidget.mColorButton
+        color_button.blockSignals(True)
+        try:
+            color_button.setColor(color)
+        finally:
+            color_button.blockSignals(False)
+
+        self.checkBoxColor_changed()
 
     def checkBoxColor_changed(self):
         if self.dockwidget.checkBoxColor.isChecked():
