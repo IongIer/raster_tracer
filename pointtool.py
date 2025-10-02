@@ -228,7 +228,16 @@ class PointTool(QgsMapToolEdit):
             self.marker_snap.show()
 
     def snap2_tolerance_changed(self, snap_tolerance):
-        self.snap2_tolerance = snap_tolerance**2
+        if snap_tolerance is None:
+            self.snap2_tolerance = None
+            return
+
+        try:
+            snap_value = float(snap_tolerance)
+        except (TypeError, ValueError):
+            return
+
+        self.snap2_tolerance = snap_value ** 2
         # if snap_tolerance is None:
         #     self.marker_snap.hide()
         # else:
