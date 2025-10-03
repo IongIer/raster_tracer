@@ -26,6 +26,7 @@ class State:
 
         # finish point path if it was last point
         self.pointtool.anchors = []
+        self.pointtool.current_feature_id = None
 
         # hide all markers
         while self.pointtool.markers:
@@ -85,6 +86,7 @@ class State:
                 "RasterTracer",
                 Qgis.Warning,
             )
+            self.pointtool.current_feature_id = None
             self.pointtool.change_state(WaitingFirstPointState)
             return False
 

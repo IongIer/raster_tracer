@@ -159,6 +159,7 @@ class PointTool(QgsMapToolEdit):
         self.raster_context = RasterTracingContext(self)
 
         self.tracking_is_active = False
+        self.current_feature_id = None
 
         # False = not a polygon
         self.rubber_band = QgsRubberBand(self.canvas(), QgsWkbTypes.LineGeometry)
@@ -722,11 +723,15 @@ class PointTool(QgsMapToolEdit):
         self.ready = False
         if len(self.anchors) == 2:
             vlayer.beginEditCommand("Adding new line")
-            add_feature_to_vlayer(vlayer, path_ref)
+            self.current_feature_id = add_feature_to_vlayer(vlayer, path_ref)
             vlayer.endEditCommand()
         else:
             vlayer.beginEditCommand("Adding new segment to the line")
-            add_to_last_feature(vlayer, path_ref)
+            self.current_feature_id = add_to_last_feature(
+                vlayer,
+                path_ref,
+                fid=self.current_feature_id,
+            )
             vlayer.endEditCommand()
         _, _, current_last_point_i, current_last_point_j = self.anchors[-1]
         last_x = current_last_point.x() if hasattr(current_last_point, 'x') else current_last_point[0]
@@ -841,6 +846,8 @@ class PointTool(QgsMapToolEdit):
                     undo_edit=False,
                     )
 
+        self.current_feature_id = None
+
     def redraw(self):
         # If caching is enabled, a simple canvas refresh might not be
         # sufficient to trigger a redraw and you must clear the cached image
@@ -888,17 +895,31 @@ class PointTool(QgsMapToolEdit):
 
 
 
-def add_to_last_feature(vlayer, points):
+def add_to_last_feature(vlayer, points, fid):
     '''
-    Adds points to the last line feature in the vlayer
+    Adds points to the target line feature in the vlayer identified by fid.
     vlayer - QgsLayer of type MultiLine string
     points - list of points
+    fid - id of the feature to update
     '''
-    features = list(vlayer.getFeatures())
-    last_feature = features[-1]
-    fid = last_feature.id()
-    geom = last_feature.geometry()
-    new_points = [QgsPointXY(x, y) for x, y in points]
+    def _as_qgs_point_xy(point):
+        if hasattr(point, 'x') and hasattr(point, 'y'):
+            return QgsPointXY(point.x(), point.y())
+        x, y = point
+        return QgsPointXY(x, y)
+
+    feature = vlayer.getFeature(fid)
+    if not feature.isValid():
+        layer_name = vlayer.name() if hasattr(vlayer, "name") else "<unknown layer>"
+        QgsMessageLog.logMessage(
+            f"[feature] Unable to extend feature id {fid} on layer '{layer_name}'; geometry unchanged",
+            "RasterTracer",
+            Qgis.Critical,
+        )
+        return None
+
+    geom = feature.geometry()
+    new_points = [_as_qgs_point_xy(point) for point in points]
 
     if geom.isMultipart():
         multiline = geom.asMultiPolyline()
@@ -914,14 +935,17 @@ def add_to_last_feature(vlayer, points):
         new_geom = QgsGeometry.fromPolylineXY(polyline)
 
     vlayer.changeGeometry(fid, new_geom)
+    return fid
 
 
 def add_feature_to_vlayer(vlayer, points):
     '''
-    Adds new line feature to the vlayer
+    Adds new line feature to the vlayer and returns the assigned feature id.
     '''
 
     feat = QgsFeature(vlayer.fields())
     polyline = [QgsPoint(x, y) for x, y in points]
     feat.setGeometry(QgsGeometry.fromPolyline(polyline))
-    vlayer.addFeature(feat)
+    if not vlayer.addFeature(feat):
+        return None
+    return feat.id()
