@@ -160,6 +160,7 @@ class PointTool(QgsMapToolEdit):
 
         self.tracking_is_active = False
         self.current_feature_id = None
+        self._has_optimistic_anchor = False
 
         # False = not a polygon
         self.rubber_band = QgsRubberBand(self.canvas(), QgsWkbTypes.LineGeometry)
@@ -244,6 +245,37 @@ class PointTool(QgsMapToolEdit):
 
     def clear_preview(self):
         self.preview_controller.clear()
+
+    def _cancel_inflight_segment(self):
+        """
+        Abort any running preview/trace segment and roll back optimistic state.
+        """
+        pending_commit = self.preview_controller.has_pending_commit()
+        task_active = self.task_controller.active
+        was_tracking = self.tracking_is_active
+
+        self.preview_controller.clear_commit()
+        self.preview_controller.clear()
+
+        self.task_controller.cancel()
+
+        should_pop_anchor = (
+            self._has_optimistic_anchor and
+            (was_tracking or pending_commit or task_active)
+        )
+        if should_pop_anchor and self.anchors:
+            if self.markers:
+                marker = self.markers.pop()
+                try:
+                    self.canvas().scene().removeItem(marker)
+                except RuntimeError:
+                    pass
+            self.anchors.pop()
+            self.update_rubber_band()
+            self.redraw()
+
+        self._has_optimistic_anchor = False
+        self.tracking_is_active = False
 
     def _take_preview_path_if_valid(self, start_point, end_point, click_pos):
         return self.preview_controller.take_path_if_valid(start_point, end_point, click_pos)
@@ -380,10 +412,12 @@ class PointTool(QgsMapToolEdit):
         if redraw:
             self.update_rubber_band()
             self.redraw()
+        self._has_optimistic_anchor = False
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Backspace or e.key() == Qt.Key_B:
             # delete last segment if backspace is pressed
+            self._cancel_inflight_segment()
             self.remove_last_anchor_point()
         elif e.key() == Qt.Key_A:
             # change tracing mode
@@ -408,6 +442,7 @@ class PointTool(QgsMapToolEdit):
 
         anchor = Anchor(x1, y1, i1, j1)
         self.anchors.append(anchor)
+        self._has_optimistic_anchor = len(self.anchors) >= 2
 
         marker = QgsVertexMarker(self.canvas())
         marker.setCenter(QgsPointXY(x1, y1))
@@ -744,6 +779,7 @@ class PointTool(QgsMapToolEdit):
         )
         self.redraw()
         self.tracking_is_active = False
+        self._has_optimistic_anchor = False
 
 
     def update_rubber_band(self):
@@ -837,15 +873,16 @@ class PointTool(QgsMapToolEdit):
 
         # check if we have any tasks
         if not self.task_controller.active:
+            self._has_optimistic_anchor = False
             return
 
         self.tracking_is_active = False
 
         if self.task_controller.cancel():
             self.remove_last_anchor_point(
-                    undo_edit=False,
-                    )
-
+                undo_edit=False,
+            )
+        self._has_optimistic_anchor = False
         self.current_feature_id = None
 
     def redraw(self):

@@ -22,11 +22,12 @@ class State:
         Event when the user clicks on the map with the right button
         '''
 
-        self.pointtool.clear_preview()
+        self.pointtool._cancel_inflight_segment()
 
         # finish point path if it was last point
         self.pointtool.anchors = []
         self.pointtool.current_feature_id = None
+        self.pointtool._has_optimistic_anchor = False
 
         # hide all markers
         while self.pointtool.markers:
