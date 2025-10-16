@@ -161,6 +161,8 @@ class PointTool(QgsMapToolEdit):
         self.tracking_is_active = False
         self.current_feature_id = None
         self._has_optimistic_anchor = False
+        self._task_generation = 0
+        self._active_task_generation = None
 
         # False = not a polygon
         self.rubber_band = QgsRubberBand(self.canvas(), QgsWkbTypes.LineGeometry)
@@ -253,6 +255,7 @@ class PointTool(QgsMapToolEdit):
         pending_commit = self.preview_controller.has_pending_commit()
         task_active = self.task_controller.active
         was_tracking = self.tracking_is_active
+        self._active_task_generation = None
 
         self.preview_controller.clear_commit()
         self.preview_controller.clear()
@@ -520,12 +523,17 @@ class PointTool(QgsMapToolEdit):
         origin_i, origin_j = preparation["origin"]
 
         if do_it_as_task:
-            def callback(path, layer):
+            self._task_generation += 1
+            task_generation = self._task_generation
+            self._active_task_generation = task_generation
+
+            def callback(path, layer, generation=task_generation):
                 self._task_path_callback(
                     path,
                     layer,
                     origin_i,
                     origin_j,
+                    generation,
                 )
 
             self.task_controller.start(
@@ -549,7 +557,12 @@ class PointTool(QgsMapToolEdit):
             ]
             return global_path, cost
 
-    def _task_path_callback(self, path, vlayer, origin_i, origin_j):
+    def _task_path_callback(self, path, vlayer, origin_i, origin_j, generation):
+        if generation != self._active_task_generation:
+            return
+        if not self.tracking_is_active:
+            self._active_task_generation = None
+            return
         if path is None:
             self.tracking_is_active = False
             self.preview_controller.clear()
@@ -559,8 +572,10 @@ class PointTool(QgsMapToolEdit):
                 level='Warning',
                 duration=2,
             )
+            self._active_task_generation = None
             return
 
+        self._active_task_generation = None
         path = [(i + origin_i, j + origin_j) for i, j in path]
         self.draw_path(path, vlayer)
 
