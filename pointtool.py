@@ -6,12 +6,14 @@ from enum import Enum
 from collections import namedtuple
 import os
 import time
+import math
 
 import numpy as np
 
 from qgis.core import QgsPointXY, QgsPoint, QgsGeometry, QgsFeature, \
                       QgsVectorLayer, QgsProject, QgsWkbTypes, QgsApplication, \
-                      QgsRectangle, QgsSpatialIndex, QgsMessageLog
+                      QgsRectangle, QgsSpatialIndex, QgsMessageLog, QgsCsException, \
+                      QgsFeatureRequest
 from qgis.gui import QgsMapToolEmitPoint, QgsMapToolEdit, \
                      QgsRubberBand, QgsVertexMarker, QgsMapTool
 from qgis.PyQt.QtCore import Qt
@@ -652,14 +654,123 @@ class PointTool(QgsMapToolEdit):
         finds a nearest segment line to the current vlayer
         '''
 
-        pt = QgsPointXY(x, y)
-        # nearest_feature_id = self.spIndex.nearestNeighbor(pt, 1, tolerance)[0]
         vlayer = self.get_current_vector_layer()
-        # feature = vlayer.getFeature(nearest_feature_id)
-        for feature in vlayer.getFeatures():
-            closest_point, _, _, _, sq_distance = feature.geometry().closestVertex(pt)
+        if vlayer is None:
+            return x, y
+
+        project = QgsProject.instance()
+        project_crs = project.crs()
+        layer_crs = vlayer.crs()
+
+        pt_project = QgsPointXY(x, y)
+        to_layer = None
+        if layer_crs.isValid() and layer_crs != project_crs:
+            try:
+                to_layer = QgsCoordinateTransform(project_crs, layer_crs, project)
+            except QgsCsException:
+                QgsMessageLog.logMessage(
+                    "[snap2] Failed to build project→layer transform; using project CRS",
+                    "RasterTracer",
+                    Qgis.Warning,
+                )
+                to_layer = None
+        else:
+            to_layer = None
+
+        if to_layer is not None:
+            try:
+                pt_layer = to_layer.transform(pt_project)
+            except QgsCsException:
+                QgsMessageLog.logMessage(
+                    "[snap2] Failed to transform cursor into layer CRS; falling back to project CRS",
+                    "RasterTracer",
+                    Qgis.Warning,
+                )
+                pt_layer = QgsPointXY(pt_project)
+                to_layer = None
+        else:
+            pt_layer = QgsPointXY(pt_project)
+
+        from_layer = None
+        if to_layer is not None:
+            try:
+                from_layer = QgsCoordinateTransform(layer_crs, project_crs, project)
+            except QgsCsException:
+                from_layer = None
+
+        if sq_tolerance is None or sq_tolerance <= 0:
+            return x, y
+
+        tolerance = math.sqrt(sq_tolerance)
+        search_rect = QgsRectangle(
+            pt_layer.x() - tolerance,
+            pt_layer.y() - tolerance,
+            pt_layer.x() + tolerance,
+            pt_layer.y() + tolerance,
+        )
+        request = QgsFeatureRequest()
+        request.setSubsetOfAttributes([])
+        request.setFilterRect(search_rect)
+
+        closest_sq_project = None
+        closest_sq_layer = None
+        closest_fid = None
+
+        for feature in vlayer.getFeatures(request):
+            closest_point, _, _, _, sq_distance = feature.geometry().closestVertex(pt_layer)
             if sq_distance < sq_tolerance:
-                return closest_point.x(), closest_point.y()
+                if from_layer is not None:
+                    try:
+                        snapped = from_layer.transform(closest_point)
+                    except QgsCsException:
+                        QgsMessageLog.logMessage(
+                            (
+                                "[snap2] Failed to transform snapped vertex back to project CRS; "
+                                "using layer coordinates"
+                            ),
+                            "RasterTracer",
+                            Qgis.Warning,
+                        )
+                        snapped = closest_point
+                else:
+                    snapped = closest_point
+                snapped_x = snapped.x()
+                snapped_y = snapped.y()
+                dx = snapped_x - x
+                dy = snapped_y - y
+                sq_distance_project = (dx * dx) + (dy * dy)
+                if sq_distance_project <= sq_tolerance:
+                    QgsMessageLog.logMessage(
+                        (
+                            "[snap2] Snapped to feature "
+                            f"{feature.id()} at distance "
+                            f"{math.sqrt(sq_distance_project):.3f} "
+                            f"(tolerance {math.sqrt(sq_tolerance):.3f})"
+                        ),
+                        "RasterTracer",
+                        Qgis.Info,
+                    )
+                    return snapped_x, snapped_y
+                if (
+                        closest_sq_project is None or
+                        sq_distance_project < closest_sq_project
+                ):
+                    closest_sq_project = sq_distance_project
+                    closest_sq_layer = sq_distance
+                    closest_fid = feature.id()
+
+        if closest_sq_project is not None:
+            QgsMessageLog.logMessage(
+                (
+                    "[snap2] No vertex within tolerance; "
+                    f"closest feature {closest_fid} is "
+                    f"{math.sqrt(closest_sq_project):.3f} "
+                    f"(project units) / {math.sqrt(closest_sq_layer):.3f} "
+                    "(layer units) away"
+                ),
+                "RasterTracer",
+                Qgis.Info,
+            )
         return x, y
 
     def snap(self, i, j):
@@ -766,24 +877,50 @@ class PointTool(QgsMapToolEdit):
             self.current_feature_id = None
             return
 
-        transform = QgsCoordinateTransform(QgsProject.instance().crs(),
-                                           vlayer.crs(),
-                                           QgsProject.instance())
+        project = QgsProject.instance()
+        project_crs = project.crs()
+        vector_crs = vlayer.crs()
+        transform = None
+        if vector_crs.isValid() and project_crs != vector_crs:
+            transform = QgsCoordinateTransform(project_crs, vector_crs, project)
+
+        def _as_coords(obj):
+            if hasattr(obj, 'x'):
+                return obj.x(), obj.y()
+            return obj[0], obj[1]
+
+        def _indices_to_map_coords(i_val, j_val):
+            pt = self.to_coords(i_val, j_val)
+            return _as_coords(pt)
+
+        def _map_to_layer_coords(x_val, y_val):
+            if transform is None:
+                return (x_val, y_val)
+            try:
+                transformed = transform.transform(x_val, y_val)
+            except QgsCsException:
+                transformed = QgsPointXY(x_val, y_val)
+            return _as_coords(transformed)
+
         if was_tracing:
             if self.smooth_line:
                 path = smooth(path, size=5)
                 path = simplify(path)
-            vlayer = self.get_current_vector_layer()
-            current_last_point = self.to_coords(*path[-1])
-            path_ref = [transform.transform(*self.to_coords_provider(i, j)) for i, j in path]
             x0, y0, _, _ = self.anchors[-2]
-            last_point = transform.transform(*self.to_coords_provider2(x0, y0))
-            path_ref = [last_point] + path_ref[1:]
+            map_path = [_indices_to_map_coords(i_val, j_val) for i_val, j_val in path]
+            if not map_path:
+                self.tracking_is_active = False
+                self.current_feature_id = None
+                return
+            if map_path:
+                map_path[0] = (x0, y0)
+            path_ref = [_map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path]
+            current_last_point = QgsPointXY(*map_path[-1])
         else:
             x0, y0, _i, _j = self.anchors[-2]
             current_last_point = (x1, y1)
-            path_ref = [transform.transform(*self.to_coords_provider2(x0, y0)),
-                        transform.transform(*self.to_coords_provider2(x1, y1))]
+            map_path = [(x0, y0), (x1, y1)]
+            path_ref = [_map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path]
 
 
         self.ready = False
@@ -867,20 +1004,38 @@ class PointTool(QgsMapToolEdit):
 
             if base_i is not None and base_j is not None:
                 target_i, target_j = base_i, base_j
+                marker_x, marker_y = x1, y1
                 if self.snap_tolerance is not None:
                     try:
                         target_i, target_j = self.snap(base_i, base_j)
                     except OutsideMapError:
+                        self.marker_snap.hide()
                         self.clear_preview()
                         return
                     snap_point = self.to_coords(target_i, target_j)
-                    if hasattr(snap_point, 'x'):
-                        self.marker_snap.setCenter(QgsPointXY(snap_point.x(), snap_point.y()))
-                    else:
-                        self.marker_snap.setCenter(QgsPointXY(snap_point[0], snap_point[1]))
+                    marker_x, marker_y = (
+                        snap_point.x(), snap_point.y()
+                    ) if hasattr(snap_point, 'x') else (snap_point[0], snap_point[1])
+                if self.snap2_tolerance is not None:
+                    snapped_x, snapped_y = self.snap_to_itself(marker_x, marker_y, self.snap2_tolerance)
+                    marker_x, marker_y = snapped_x, snapped_y
+                    try:
+                        target_i, target_j = self.to_indexes(marker_x, marker_y)
+                    except Exception:  # pylint: disable=broad-except
+                        self.marker_snap.hide()
+                        self.clear_preview()
+                        return
+                if self.snap_tolerance is not None or self.snap2_tolerance is not None:
+                    self.marker_snap.setCenter(QgsPointXY(marker_x, marker_y))
+                    self.marker_snap.show()
+                else:
+                    self.marker_snap.hide()
                 preview_goal = (target_i, target_j)
+            else:
+                self.marker_snap.hide()
         else:
             self.clear_preview()
+            self.marker_snap.hide()
 
         self.last_mouse_event_pos = mouseEvent.pos()
         self.update_rubber_band()
