@@ -37,7 +37,6 @@ ALLOW_AUTO_FOLLOWING = False
 SHORTCUT_KEYS = {
     Qt.Key_A,
     Qt.Key_B,
-    Qt.Key_Backspace,
     Qt.Key_S,
     Qt.Key_Escape,
     Qt.Key_T,
@@ -408,9 +407,14 @@ class PointTool(QgsMapToolEdit):
         if self.anchors:
             self.anchors.pop()
 
-        if undo_edit:
+        if undo_edit and vlayer is not None and vlayer.isEditable():
             # it's a very ugly way of triggering single undo event
             self.iface.editMenu().actions()[0].trigger()
+
+        if not self.anchors:
+            self.current_feature_id = None
+            self.change_state(WaitingFirstPointState)
+            self.rubber_band.hide()
 
         if redraw:
             self.update_rubber_band()
@@ -418,7 +422,7 @@ class PointTool(QgsMapToolEdit):
         self._has_optimistic_anchor = False
 
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Backspace or e.key() == Qt.Key_B:
+        if e.key() == Qt.Key_B:
             # delete last segment if backspace is pressed
             self._cancel_inflight_segment()
             self.remove_last_anchor_point()
@@ -749,6 +753,18 @@ class PointTool(QgsMapToolEdit):
         '''
 
         self.preview_controller.clear()
+
+        # Guard against missing anchors when undo cleared the trace.
+        if was_tracing and len(self.anchors) < 2:
+            self.display_message(
+                "Tracing cancelled",
+                "Ignoring segment because tracing was cancelled.",
+                level='Warning',
+                duration=2,
+            )
+            self.tracking_is_active = False
+            self.current_feature_id = None
+            return
 
         transform = QgsCoordinateTransform(QgsProject.instance().crs(),
                                            vlayer.crs(),
