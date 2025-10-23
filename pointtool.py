@@ -36,12 +36,16 @@ Anchor = namedtuple('Anchor', ['x', 'y', 'i', 'j'])
 # Flag for experimental Autofollowing mode
 ALLOW_AUTO_FOLLOWING = False
 
+# Default spacing for dense straight segments in layer units (≈5 m in projected CRS)
+DENSE_LINE_SPACING = 5.0
+
 SHORTCUT_KEYS = {
     Qt.Key_A,
     Qt.Key_B,
     Qt.Key_S,
     Qt.Key_Escape,
     Qt.Key_T,
+    Qt.Key_D,
 }
 
 PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
@@ -51,6 +55,7 @@ class TracingModes(Enum):
     '''
     Possible Tracing Modes for Pointtool.
     LINE - straight line from start to end.
+    DENSE_LINE - straight line densified at fixed spacing.
     PATH - tracing along color from start to end.
     AUTO - auto tracing mode along color in the given direction.
     '''
@@ -58,6 +63,7 @@ class TracingModes(Enum):
     LINE = 1
     PATH = 2
     AUTO = 3
+    DENSE_LINE = 4
 
     def next(self):
         '''
@@ -92,6 +98,14 @@ RUBBERBAND_LINE_STYLES = {
     TracingModes.PATH: Qt.DotLine,
     TracingModes.LINE: Qt.SolidLine,
     TracingModes.AUTO: Qt.DashDotLine,
+    TracingModes.DENSE_LINE: Qt.SolidLine,
+    }
+
+RUBBERBAND_COLORS = {
+    TracingModes.PATH: QColor(255, 0, 0),
+    TracingModes.LINE: QColor(255, 0, 0),
+    TracingModes.AUTO: QColor(255, 0, 0),
+    TracingModes.DENSE_LINE: QColor(0, 102, 255),
     }
 
 
@@ -429,8 +443,20 @@ class PointTool(QgsMapToolEdit):
             self._cancel_inflight_segment()
             self.remove_last_anchor_point()
         elif e.key() == Qt.Key_A:
-            # change tracing mode
-            self.tracing_mode = self.tracing_mode.next()
+            # toggle between path following and straight line modes
+            if self.tracing_mode != TracingModes.LINE:
+                self.tracing_mode = TracingModes.LINE
+            else:
+                self.tracing_mode = TracingModes.PATH
+            self.update_rubber_band()
+            if not self.tracing_mode.is_tracing():
+                self.clear_preview()
+        elif e.key() == Qt.Key_D:
+            # toggle dense straight line mode
+            if self.tracing_mode != TracingModes.DENSE_LINE:
+                self.tracing_mode = TracingModes.DENSE_LINE
+            else:
+                self.tracing_mode = TracingModes.PATH
             self.update_rubber_band()
             if not self.tracing_mode.is_tracing():
                 self.clear_preview()
@@ -857,6 +883,59 @@ class PointTool(QgsMapToolEdit):
 
         return
 
+    def _build_dense_line_path(self, start_map, end_map, map_to_layer_coords):
+        '''
+        Builds map and layer coordinate paths for dense line mode.
+        '''
+        def _as_tuple(point):
+            if hasattr(point, 'x'):
+                return point.x(), point.y()
+            return point[0], point[1]
+
+        x0, y0 = start_map
+        x1, y1 = end_map
+
+        layer_start = _as_tuple(map_to_layer_coords(x0, y0))
+        layer_end = _as_tuple(map_to_layer_coords(x1, y1))
+
+        dx_layer = layer_end[0] - layer_start[0]
+        dy_layer = layer_end[1] - layer_start[1]
+        layer_length = math.hypot(dx_layer, dy_layer)
+
+        if layer_length <= 0:
+            return [start_map, end_map], [layer_start, layer_end]
+
+        if layer_length < DENSE_LINE_SPACING:
+            fractions = [0.5]
+        else:
+            fractions = []
+            max_steps = int(layer_length // DENSE_LINE_SPACING)
+            for step in range(1, max_steps + 1):
+                distance = step * DENSE_LINE_SPACING
+                if distance >= layer_length:
+                    break
+                fractions.append(distance / layer_length)
+
+        map_path = [start_map]
+        path_ref = [layer_start]
+
+        for fraction in fractions:
+            map_point = (
+                x0 + (x1 - x0) * fraction,
+                y0 + (y1 - y0) * fraction,
+            )
+            layer_point = (
+                layer_start[0] + dx_layer * fraction,
+                layer_start[1] + dy_layer * fraction,
+            )
+            map_path.append(map_point)
+            path_ref.append(layer_point)
+
+        map_path.append(end_map)
+        path_ref.append(layer_end)
+
+        return map_path, path_ref
+
     def draw_path(self, path, vlayer, was_tracing=True,\
                   x1=None, y1=None):
         '''
@@ -919,8 +998,15 @@ class PointTool(QgsMapToolEdit):
         else:
             x0, y0, _i, _j = self.anchors[-2]
             current_last_point = (x1, y1)
-            map_path = [(x0, y0), (x1, y1)]
-            path_ref = [_map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path]
+            if self.tracing_mode == TracingModes.DENSE_LINE:
+                map_path, path_ref = self._build_dense_line_path(
+                    (x0, y0),
+                    (x1, y1),
+                    _map_to_layer_coords,
+                )
+            else:
+                map_path = [(x0, y0), (x1, y1)]
+                path_ref = [_map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path]
 
 
         self.ready = False
@@ -963,12 +1049,18 @@ class PointTool(QgsMapToolEdit):
         x1, y1 = qgsPoint.x(), qgsPoint.y()
         points = [QgsPoint(x0, y0), QgsPoint(x1, y1)]
 
-        self.rubber_band.setColor(QColor(255, 0, 0))
+        color = RUBBERBAND_COLORS.get(
+            self.tracing_mode,
+            RUBBERBAND_COLORS.get(TracingModes.LINE),
+        )
+        self.rubber_band.setColor(color)
         self.rubber_band.setWidth(3)
 
-        self.rubber_band.setLineStyle(
-            RUBBERBAND_LINE_STYLES[self.tracing_mode],
-            )
+        line_style = RUBBERBAND_LINE_STYLES.get(
+            self.tracing_mode,
+            Qt.SolidLine,
+        )
+        self.rubber_band.setLineStyle(line_style)
 
         vlayer = self.get_current_vector_layer()
         if vlayer is None:
