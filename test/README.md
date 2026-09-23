@@ -4,29 +4,20 @@ The test suite uses real QGIS providers, Qt widgets, map canvases and background
 tasks. `qgis_interface.py` supplies the small part of `QgsInterface` the plugin
 needs; it is not the complete QGIS desktop application.
 
-The 0.3.4 ZIP was validated with 15 passing tests and one optional translation
-fixture skipped in each of these environments:
+Tests use real providers, widgets, edit/undo stacks and task threads. Controlled
+terminal delivery forces late-success races; thread barriers verify independent
+GDAL handles and serialization across dock close/reopen. Numerical search and
+smoothing tests also run without QGIS, GDAL or NumPy:
 
-| QGIS | Qt / PyQt | NumPy |
-| --- | --- | --- |
-| 3.40.12 | 5.15.8 / 5.15.9 | 1.24.2 |
-| 3.44.4 | 5.15.8 / 5.15.9 | 1.24.2 |
-| 4.0.3 | 6.8.2 / 6.9.0 | 2.2.4 |
+```sh
+python3 scripts/run-tests.py --core-only
+```
 
-The Ruff/uv migration was revalidated locally on 2026-09-23 against all three
-digest-pinned images using the final formatted ZIP: 15 tests passed and the
-optional translation test skipped in each. Fresh locked tool installation,
-lint/format failure enforcement, Python 3.9 grammar, package contents and
-translation discovery also passed. Hosted CI and desktop checks were not run
-as part of that validation.
-
-Tests cover plugin startup and reopening, icon loading, keyboard shortcuts,
-mouse clicks, color snapping and settings, tracing and committing geometry,
-background trace/preview cancellation and restart, and differing
-project/raster/vector CRSs. A
-16-by-16 RGB GeoTIFF is generated in a temporary directory and deleted after
-each integration test. This also checks conversion from GDAL byte bands to
-floating-point arrays under NumPy 1 and 2.
+The normal runner includes these numerical regressions in every packaged QGIS
+matrix run. The generated 16-by-16 fixture and other small rasters are temporary.
+The Afrikaans sample catalog has a compiled fixture at `test/af.qm`, so its
+translation test passes; if the optional fixture is removed, its skip must be
+reported separately. The fixture is excluded from the plugin ZIP.
 
 ## Run without installing QGIS on the host
 
@@ -86,8 +77,9 @@ tree. Select its interpreter with `make test PYTHON=/path/to/qgis/python` if
 necessary. Keep it separate from uv's `.venv`; do not use `uv run make test`
 or install QGIS/Qt/GDAL/NumPy in the tooling environment. Both runners propagate
 failures and impose a timeout on hung tests.
-The optional sample translation test is skipped when `i18n/af.qm` has not been
-compiled; it is unrelated to the tracing compatibility checks.
+The optional sample translation test is skipped when `test/af.qm` is absent;
+it is unrelated to the tracing compatibility checks. To rebuild the fixture,
+run `lrelease i18n/af.ts -qm test/af.qm` from the repository root.
 
 ## Resources and packaging
 
@@ -122,8 +114,14 @@ RGB raster and an editable MultiLineString layer, then:
 2. Exercise `A`, `D`, `B`, `S`, `T` and Escape with canvas and layer-tree focus.
 3. Check color and vector snapping, smoothing, and preview color/width.
 4. Cancel a long trace, start another, and close/reopen the dock.
-5. Save edits, reopen the project, and inspect the saved line geometry.
+5. Switch raster and vector layers while a trace is pending; change the canvas
+   CRS, close/reopen the dock, and unload with work running.
+6. Change preview and snap settings during pending work; verify exact snap
+   joins and B/Escape behavior after cancelled or failed segments.
+7. Save edits, reopen the project, and inspect the saved line geometry.
+8. Check large-raster hover, cancellation and responsiveness with both Qt5
+   and Qt6 in a clean profile.
 
 This checks desktop focus, rendering and responsiveness that the automated
-suite cannot fully establish. No visible UI layout or translated text changed
-as part of the compatibility migration.
+suite cannot fully establish. The hardening change adds translated failure messages and a tooltip documenting
+vector snap units; the layout and persisted settings keys are unchanged.

@@ -121,20 +121,51 @@ or directly in the CLI with:
 
 `pct2rgb.py <infile> <outfile> -of GTiff -b 1`
 
-Also in the current version there are some issues when coordinate system 
-of the raster layer differs from the coordinate system of the project.
-It might be useful to convert the image that will be processed to the same coordinate
-system used by the QGis project before importing. For example, the command bellow
-converts a geotiff image (already georeferenced) to an `EPSG:4326` coordinate system.
+Raster, canvas and vector layer CRSs may differ. Endpoints and snap tolerances
+use the canvas destination CRS; geometry is transformed to the bound vector
+layer before editing. Failed transformations leave earlier segments intact.
+Rotated/skewed raster mappings are rejected. Nodata and nonfinite RGB pixels
+are impassable, including when sampling the trace color.
 
-`gdalwarp -t_srs EPSG:4326 -of GTiff infile.tif outfile.tif`
+## Tracing behavior and limits
 
-__NOTE__: `pct2rgb.py` and `gdalwarp` are part of the GDAL package.
+Preview and committed segments use the same resolved endpoints and smoothing.
+Color snapping uses an inclusive radius of up to 99 raster pixels. Vector
+snapping then takes precedence and selects the nearest vertex across candidate
+features. Its tolerance is a linear distance in **canvas CRS map units**;
+saved tolerances are not screen pixels or automatically converted to meters.
+
+Escape cancels the pending segment and retains earlier geometry. B cancels a
+pending segment, otherwise undoes the last tracer command only while it is
+still the bound layer's top undo command. B can also remove the initial anchor
+on an empty layer. Right-click finishes the line. Changing raster/target layer,
+CRS or transform context, stopping editing, external geometry edits, or
+switching tools finishes the session while retaining written geometry.
+
+Changing color, mode, smoothing or snapping cancels pending work and retains
+previous segments. Disabling preview cancels a segment adopted from preview;
+an independent committed trace can finish. Closing/reopening the dock shares
+one scheduler: cancelled workers drain before replacement work starts.
+
+Search uses four-neighbor movement and minimizes the sum of entered-pixel
+squared RGB distances, quantized to integers, within a deterministic padded
+window. Zero-cost pixels remain zero cost. Padding stays at 1024 pixels with a
+minimum window dimension of 512 (clipped to raster size). Cache history does
+not enlarge or shrink the searched graph.
+
+Internal caps are 8,388,608 search pixels, 256 MiB of accounted array/scratch
+allocations, 1,000,000 discovered nodes and 1,000,000 frontier entries. The
+array cap includes a reserve for cursor sampling, and may be reached before
+the pixel cap. A limit failure asks for a shorter segment and does not commit
+partial geometry. These are allocation/count limits, not a bound on total
+QGIS/GDAL/Python process memory. Large reads, cost preparation, search and
+smoothing run in one background task; Python search can still contend for the
+GIL.
 
 ## Useful keys
 
 
-`b` - delete last segment
+`b` - cancel the pending segment, or undo the last owned tracer segment
 
 `a` - switch between "trace" mode and "straight-line" mode.
 

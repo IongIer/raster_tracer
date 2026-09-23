@@ -1,239 +1,122 @@
-"""
-Module performs searching of the best path on 2D grid between
-two given points by using famous A* method.
-Code is based on example from
-https://www.redblobgames.com/pathfinding/a-star/implementation.html
-"""
+"""QGIS-independent, exact four-neighbor minimum-color-cost search."""
 
-import cProfile
 import heapq
-import io
-import os
-import pstats
+import itertools
 import time
-from collections import namedtuple
+from dataclasses import dataclass
 
-from qgis.core import Qgis, QgsMessageLog, QgsTask
-
-PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
-
-
-FindPathCoreResult = namedtuple(
-    "FindPathCoreResult",
-    ["path", "cost", "profile_stats", "cancelled"],
-)
+MAX_DISCOVERED_NODES = 1_000_000
+MAX_FRONTIER_ENTRIES = 1_000_000
 
 
-class PriorityQueue:
-    def __init__(self):
-        self.elements = []
+@dataclass(frozen=True)
+class FindPathCoreResult:
+    path: object = None
+    cost: object = None
+    profile_stats: object = None
+    status: str = "no_path"
 
-    def empty(self):
-        return len(self.elements) == 0
-
-    def put(self, item, priority):
-        heapq.heappush(self.elements, (priority, item))
-
-    def get(self):
-        return heapq.heappop(self.elements)[1]
+    @property
+    def cancelled(self):
+        return self.status == "cancelled"
 
 
-def heuristic(a, b):
-    (x1, y1) = a
-    (x2, y2) = b
-    return abs(x1 - x2) + abs(y1 - y2)
+def get_neighbors(height, width, point):
+    i, j = point
+    # Fixed order plus a sequence number makes equal-cost paths reproducible.
+    for row, col in ((i - 1, j), (i, j - 1), (i + 1, j), (i, j + 1)):
+        if 0 <= row < height and 0 <= col < width:
+            yield row, col
 
 
-def get_neighbors(size_i, size_j, ij):
-    """returns possible neighbors of a numpy cell"""
-    i, j = ij
-    neighbors = set()
-    if i > 0:
-        neighbors.add((i - 1, j))
-    if j > 0:
-        neighbors.add((i, j - 1))
-    if i < size_i - 1:
-        neighbors.add((i + 1, j))
-    if j < size_j - 1:
-        neighbors.add((i, j + 1))
-    return neighbors
+def _find_path_core(
+    graph,
+    start,
+    goal,
+    cancel_cb=None,
+    valid=None,
+    max_nodes=MAX_DISCOVERED_NODES,
+    max_frontier=MAX_FRONTIER_ENTRIES,
+):
+    """Minimize entered-pixel cost (start costs zero), within this exact graph.
 
+    Manhattan distance breaks ties only. Negative/nonintegral costs are invalid;
+    callers preparing arrays validate the entire graph before publishing it.
+    Python integers avoid overflow in cumulative costs.
+    """
+    started = time.perf_counter()
+    costs = {}
 
-def get_cost(array, current, next):
-    return array[next]
-
-
-def _finalize_profile(profiler, start_time, explored_nodes, cancelled):
-    if profiler is None or start_time is None:
-        return None
-    profiler.disable()
-    duration = time.perf_counter() - start_time
-    if cancelled:
-        profile_output = "Task cancelled before completion"
-    else:
-        stats_stream = io.StringIO()
-        pstats.Stats(profiler, stream=stats_stream).strip_dirs().sort_stats(
-            "cumtime"
-        ).print_stats(15)
-        profile_output = stats_stream.getvalue()
-    return {
-        "duration": duration,
-        "nodes": explored_nodes,
-        "profile": profile_output,
-    }
-
-
-def _log_profile_stats(label, stats):
-    if not stats:
-        return
-    QgsMessageLog.logMessage(
-        f"[profiling] {label} duration={stats['duration']:.3f}s nodes={stats['nodes']}",
-        "RasterTracer",
-        Qgis.MessageLevel.Info,
-    )
-    profile_text = stats.get("profile")
-    if profile_text:
-        QgsMessageLog.logMessage(
-            profile_text,
-            "RasterTracer",
-            Qgis.MessageLevel.Info,
+    def finish(status, path=None, cost=None):
+        return FindPathCoreResult(
+            path,
+            cost,
+            {
+                "duration": time.perf_counter() - started,
+                "nodes": len(costs),
+            },
+            status,
         )
 
-
-def _find_path_core(graph, start, goal, cancel_cb=None):
-    profiler = None
-    start_time = None
-    if PROFILE_ENABLED:
-        profiler = cProfile.Profile()
-        profiler.enable()
-        start_time = time.perf_counter()
-
-    frontier = PriorityQueue()
-    frontier.put(start, 0)
-    came_from = {start: None}
-    cost_so_far = {start: 0}
-
-    size_i, size_j = graph.shape
-
-    while not frontier.empty():
-        current = frontier.get()
-
+    if cancel_cb and cancel_cb():
+        return finish("cancelled")
+    height, width = graph.shape
+    for point in (start, goal):
+        if not (0 <= point[0] < height and 0 <= point[1] < width):
+            return finish("invalid_input")
+        if valid is not None and not valid[point]:
+            return finish("invalid_input")
+        try:
+            value = graph[point]
+            if int(value) != value or int(value) < 0:
+                return finish("invalid_input")
+        except (ValueError, OverflowError, TypeError):
+            return finish("invalid_input")
+    if max_nodes < 1 or max_frontier < 1:
+        return finish("resource_limit")
+    sequence = itertools.count()
+    frontier = [(0, 0, next(sequence), start)]
+    costs[start] = 0
+    parents = {start: None}
+    while frontier:
+        if cancel_cb and cancel_cb():
+            return finish("cancelled")
+        queued_cost, _, _, current = heapq.heappop(frontier)
+        if queued_cost != costs[current]:
+            continue
         if current == goal:
-            break
-
-        for next in get_neighbors(size_i, size_j, current):
-            if cancel_cb is not None and cancel_cb():
-                profile_stats = _finalize_profile(
-                    profiler,
-                    start_time,
-                    len(cost_so_far),
-                    cancelled=True,
+            path = []
+            while current is not None:
+                path.append(current)
+                current = parents[current]
+            path.reverse()
+            return finish("success", path, queued_cost)
+        for neighbor in get_neighbors(height, width, current):
+            if valid is not None and not valid[neighbor]:
+                continue
+            value = graph[neighbor]
+            try:
+                step = int(value)
+            except (ValueError, OverflowError, TypeError):
+                return finish("invalid_input")
+            if step < 0 or step != value:
+                return finish("invalid_input")
+            candidate = queued_cost + step
+            previous = costs.get(neighbor)
+            if previous is None or candidate < previous:
+                if (previous is None and len(costs) >= max_nodes) or len(
+                    frontier
+                ) >= max_frontier:
+                    return finish("resource_limit")
+                costs[neighbor] = candidate
+                parents[neighbor] = current
+                distance = abs(goal[0] - neighbor[0]) + abs(goal[1] - neighbor[1])
+                heapq.heappush(
+                    frontier, (candidate, distance, next(sequence), neighbor)
                 )
-                return FindPathCoreResult(None, None, profile_stats, True)
-
-            new_cost = cost_so_far[current] + get_cost(graph, current, next)
-            if next not in cost_so_far or new_cost < cost_so_far[next]:
-                cost_so_far[next] = new_cost
-                priority = new_cost + heuristic(goal, next)
-                frontier.put(next, priority)
-                came_from[next] = current
-
-    if goal in came_from:
-        path = reconstruct_path(came_from, start, goal)
-        cost = cost_so_far[goal]
-    else:
-        path = None
-        cost = None
-
-    profile_stats = _finalize_profile(
-        profiler,
-        start_time,
-        len(cost_so_far),
-        cancelled=False,
-    )
-
-    return FindPathCoreResult(path, cost, profile_stats, False)
+    return finish("no_path")
 
 
 def FindPathFunction(graph, start, goal):
     result = _find_path_core(graph, start, goal)
-    if PROFILE_ENABLED and result.profile_stats:
-        _log_profile_stats("FindPathFunction", result.profile_stats)
     return result.path, result.cost
-
-
-class FindPathTask(QgsTask):
-    """
-    Implementation of QGIS QgsTask
-    for searching of the path on the background.
-    """
-
-    def __init__(self, graph, start, goal, callback, vlayer):
-        """
-        Receives: graph - 2D grid of points
-        start - coordinates of start point
-        goal - coordinates of finish point
-        callback - function to call after finishing tracing
-        vlayer - vector layer for callback function
-        """
-
-        super().__init__(
-            "Task for finding path on 2D grid for raster_tracer", QgsTask.Flag.CanCancel
-        )
-        self.graph = graph
-        self.start = start
-        self.goal = goal
-        self.path = None
-        self.cost = None
-        self.callback = callback
-        self.vlayer = vlayer
-        self.profile_stats = None
-
-    def run(self):
-        """
-        Actually trace over 2D grid,
-        i.e. finding the best path from start to goal
-        """
-
-        graph = self.graph
-        start = self.start
-        goal = self.goal
-
-        result = _find_path_core(graph, start, goal, cancel_cb=self.isCanceled)
-        self.profile_stats = result.profile_stats
-        self.path = result.path
-        self.cost = result.cost
-        if result.cancelled:
-            return False
-        return True
-
-    def finished(self, result):
-        """
-        Call callback function if self.run was successful
-        """
-
-        if result:
-            self.callback(self.path, self.vlayer)
-
-        if PROFILE_ENABLED and self.profile_stats:
-            _log_profile_stats("FindPathTask", self.profile_stats)
-            self.profile_stats = None
-
-    def cancel(self):
-        """
-        Executed when run catches cancel signal.
-        Terminates the QgsTask.
-        """
-
-        super().cancel()
-
-
-def reconstruct_path(came_from, start, goal):
-    current = goal
-    path = []
-    while current != start:
-        path.append(current)
-        current = came_from[current]
-    path.append(start)  # optional
-    path.reverse()  # optional
-    return path

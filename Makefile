@@ -45,9 +45,9 @@ PLUGINNAME = raster_tracer
 PY_FILES = \
 	__init__.py \
 	raster_tracer.py raster_tracer_dockwidget.py \
-	astar.py autotrace.py exceptions.py line_simplification.py \
+	astar.py exceptions.py line_simplification.py \
 	pointtool.py pointtool_preview.py pointtool_raster.py \
-	pointtool_states.py pointtool_tasks.py utils.py
+	pointtool_session.py pointtool_states.py pointtool_tasks.py utils.py
 
 PYTHON ?= python3
 PYRCC ?= pyrcc5

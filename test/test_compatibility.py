@@ -1,17 +1,9 @@
 """Integration coverage for the same plugin under Qt5/QGIS 3 and Qt6/QGIS 4."""
 
-import tempfile
-import unittest
-from pathlib import Path
-
 import numpy as np
 from qgis.core import (
-    QgsApplication,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
-    QgsProject,
-    QgsRasterLayer,
-    QgsVectorLayer,
 )
 from qgis.gui import QgsMapMouseEvent
 from qgis.PyQt.QtCore import (
@@ -24,87 +16,13 @@ from qgis.PyQt.QtCore import (
 )
 from qgis.PyQt.QtGui import QColor, QKeyEvent, QMouseEvent
 
-from .. import classFactory
-from ..pointtool import Anchor, TracingModes
+from ..pointtool import TracingModes
 from ..utils import RasterSampler
-from .utilities import create_rgb_raster, get_qgis_app, wait_until
+from .tracing_fixture import TraceFixture
+from .utilities import wait_until
 
 
-class CompatibilityTest(unittest.TestCase):
-    """Use real providers, widgets, task threads and geometry operations."""
-
-    def setUp(self):
-        self.app, self.canvas, self.iface, self.window = get_qgis_app()
-        self.project = QgsProject.instance()
-        self.project.clear()
-        QSettings().clear()
-        self.project.setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
-        self.directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self.directory.cleanup)
-        raster_path = Path(self.directory.name) / "line.tif"
-        create_rgb_raster(raster_path)
-        self.raster = QgsRasterLayer(str(raster_path), "Trace raster")
-        self.vector = QgsVectorLayer(
-            "MultiLineString?crs=EPSG:3857", "Traced lines", "memory"
-        )
-        self.assertTrue(self.raster.isValid())
-        self.assertTrue(self.vector.isValid())
-        self.project.addMapLayer(self.raster)
-        self.project.addMapLayer(self.vector)
-        self.canvas.setDestinationCrs(self.project.crs())
-        self.canvas.setLayers([self.vector, self.raster])
-        self.canvas.setExtent(self.raster.extent())
-        self.canvas.setMapTool(self.iface.pan_tool)
-        self.iface.setActiveLayer(self.vector)
-        self.assertTrue(self.vector.startEditing())
-        self.plugin = classFactory(self.iface)
-        self.tools = []
-        self.addCleanup(self.cleanup_plugin)
-        self.plugin.initGui()
-        self.plugin.run()
-        self.tool = self.plugin.tool_identify
-        self.tools.append(self.tool)
-        self.plugin.dockwidget.mMapLayerComboBox.setLayer(self.raster)
-        self.tool.raster_layer_has_changed(self.raster)
-        self.tool.smooth_line = False
-        self.expected_path = [(8, column) for column in range(2, 14)]
-
-    def cleanup_plugin(self):
-        for tool in self.tools:
-            tool.task_controller.cancel()
-            tool.clear_preview()
-        manager = QgsApplication.taskManager()
-        wait_until(lambda: manager.countActiveTasks() == 0)
-        self.app.processEvents()
-        dock = self.plugin.dockwidget
-        if dock is not None:
-            dock.close()
-            self.window.removeDockWidget(dock)
-            dock.deleteLater()
-        toolbar = self.plugin.toolbar
-        self.plugin.unload()
-        self.window.removeToolBar(toolbar)
-        toolbar.deleteLater()
-        for tool in self.tools:
-            for item in (
-                tool.rubber_band,
-                tool.marker_snap,
-                tool.preview_controller._rubber_band,
-                *tool.markers,
-            ):
-                self.canvas.scene().removeItem(item)
-            tool.raster_context.raster_sampler = None
-            tool.deleteLater()
-        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        self.canvas.setLayers([])
-        self.project.clear()
-        self.app.processEvents()
-
-    def add_anchors(self):
-        for row, column in (self.expected_path[0], self.expected_path[-1]):
-            point = self.tool.to_coords(row, column)
-            self.tool.add_anchor_points(point.x(), point.y(), row, column)
-
+class CompatibilityTest(TraceFixture):
     def test_start_close_and_reopen(self):
         self.assertTrue(self.plugin.pluginIsActive)
         self.assertIs(self.canvas.mapTool(), self.tool)
@@ -116,8 +34,6 @@ class CompatibilityTest(unittest.TestCase):
         dock.close()
         self.assertFalse(self.plugin.pluginIsActive)
         self.assertIs(self.canvas.mapTool(), self.iface.pan_tool)
-        self.window.removeDockWidget(dock)
-        dock.deleteLater()
         self.plugin.run()
         self.tool = self.plugin.tool_identify
         self.tools.append(self.tool)
@@ -140,9 +56,6 @@ class CompatibilityTest(unittest.TestCase):
 
     def test_background_trace_and_save(self):
         self.add_anchors()
-        self.tool.trace_over_image(
-            (8, 2), (8, 13), do_it_as_task=True, vlayer=self.vector
-        )
         wait_until(lambda: not self.tool.tracking_is_active)
         self.assertEqual(self.vector.featureCount(), 1)
         self.assertTrue(self.vector.commitChanges())
@@ -151,37 +64,35 @@ class CompatibilityTest(unittest.TestCase):
         self.assertAlmostEqual(geometry.length(), 11)
 
     def test_preview_and_cancel_restart(self):
+        self.accept(8, 2)
         preview = self.tool.preview_controller
-        preview.queue((8, 2), (8, 13), QPoint(10, 20))
+        endpoint = self.tool.resolve_endpoint(self.tool.to_coords(8, 13))
+        request = self.tool.make_request(endpoint, QPoint(10, 20))
+        preview.queue(request)
         preview.ensure_inflight_started()
         self.tool.clear_preview()
-        preview.queue((8, 2), (8, 13), QPoint(10, 20))
+        request = self.tool.make_request(endpoint, QPoint(10, 20))
+        preview.queue(request)
         preview.ensure_inflight_started()
-        wait_until(lambda: preview._cached_path is not None)
+        wait_until(lambda: preview._cached_result is not None)
+        result = preview.matching_cached(request)
         self.assertEqual(
-            preview.take_path_if_valid((8, 2), (8, 13), QPoint(10, 20)),
+            [(i + result.origin[0], j + result.origin[1]) for i, j in result.path],
             self.expected_path,
         )
         self.tool.clear_preview()
-        self.assertIsNone(preview._cached_path)
+        self.assertIsNone(preview._cached_result)
         self.assertFalse(preview._rubber_band.isVisible())
 
     def test_cancel_trace_then_restart(self):
         self.add_anchors()
-        self.tool.trace_over_image(
-            (8, 2), (8, 13), do_it_as_task=True, vlayer=self.vector
+        event = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
         )
-        self.tool._cancel_inflight_segment()
-        manager = QgsApplication.taskManager()
-        wait_until(lambda: manager.countActiveTasks() == 0)
-        self.app.processEvents()
-        self.assertEqual(self.vector.featureCount(), 0)
+        self.tool.keyPressEvent(event)
+        self.assertFalse(self.tool.tracking_is_active)
         self.assertEqual(len(self.tool.anchors), 1)
-        point = self.tool.to_coords(8, 13)
-        self.tool.add_anchor_points(point.x(), point.y(), 8, 13)
-        self.tool.trace_over_image(
-            (8, 2), (8, 13), do_it_as_task=True, vlayer=self.vector
-        )
+        self.accept(8, 13)
         wait_until(lambda: not self.tool.tracking_is_active)
         self.assertEqual(self.vector.featureCount(), 1)
 
@@ -214,13 +125,12 @@ class CompatibilityTest(unittest.TestCase):
     def test_color_snap_and_settings(self):
         self.plugin.ensure_trace_color_enabled()
         self.plugin.set_trace_color_from_tool(QColor("black"))
-        self.tool._ensure_window_for_indices([(7, 8)], reason="test-snap")
         self.tool.snap_tolerance_changed(3)
         self.assertEqual(self.tool.snap(7, 8), (8, 8))
         self.assertEqual(QSettings().value("RasterTracer/color/value"), "#ff000000")
 
     def test_keyboard_filter(self):
-        self.tool.anchors = [Anchor(1002.5, 1991.5, 8, 2)]
+        self.accept(8, 2)
         for key, mode in (
             (Qt.Key.Key_A, TracingModes.LINE),
             (Qt.Key.Key_D, TracingModes.DENSE_LINE),
@@ -236,8 +146,7 @@ class CompatibilityTest(unittest.TestCase):
         self.add_anchors()
         first = self.tool.to_coords(8, 2)
         self.assertEqual(self.tool.to_indexes(first.x(), first.y()), (8, 2))
-        path, _ = self.tool.trace_over_image((8, 2), (8, 13))
-        self.tool.draw_path(path, self.vector)
+        wait_until(lambda: not self.tool.tracking_is_active)
         geometry = next(self.vector.getFeatures()).geometry()
         transform = QgsCoordinateTransform(
             self.project.crs(), self.vector.crs(), self.project

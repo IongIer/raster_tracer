@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--expected-qgis")
     parser.add_argument("--expected-qt-major", type=int)
     parser.add_argument("--failfast", action="store_true")
+    parser.add_argument("--core-only", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent.parent
     faulthandler.enable()
@@ -40,22 +41,23 @@ def main():
         os.environ["XDG_DATA_HOME"] = str(Path(temp) / "data")
         os.environ["QTWEBENGINE_DISABLE_SANDBOX"] = "1"
 
-        import numpy as np
-        from qgis.core import Qgis
-        from qgis.PyQt.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
+        if not args.core_only:
+            import numpy as np
+            from qgis.core import Qgis
+            from qgis.PyQt.QtCore import PYQT_VERSION_STR, QT_VERSION_STR
 
-        print(
-            f"QGIS {Qgis.QGIS_VERSION}; Qt {QT_VERSION_STR}; "
-            f"PyQt {PYQT_VERSION_STR}; NumPy {np.__version__}",
-            flush=True,
-        )
-        if args.expected_qgis:
-            major, minor = map(int, args.expected_qgis.split("."))
-            if Qgis.QGIS_VERSION_INT // 100 != major * 100 + minor:
-                raise RuntimeError("Container has the wrong QGIS version")
-        if args.expected_qt_major:
-            if int(QT_VERSION_STR.split(".")[0]) != args.expected_qt_major:
-                raise RuntimeError("Container has the wrong Qt major version")
+            print(
+                f"QGIS {Qgis.QGIS_VERSION}; Qt {QT_VERSION_STR}; "
+                f"PyQt {PYQT_VERSION_STR}; NumPy {np.__version__}",
+                flush=True,
+            )
+            if args.expected_qgis:
+                major, minor = map(int, args.expected_qgis.split("."))
+                if Qgis.QGIS_VERSION_INT // 100 != major * 100 + minor:
+                    raise RuntimeError("Container has the wrong QGIS version")
+            if args.expected_qt_major:
+                if int(QT_VERSION_STR.split(".")[0]) != args.expected_qt_major:
+                    raise RuntimeError("Container has the wrong Qt major version")
 
         plugin_root = root
         if args.plugin_zip:
@@ -66,13 +68,16 @@ def main():
         load_package("raster_tracer.test", root / "test")
         tests = [
             f"raster_tracer.test.{path.stem}"
-            for path in sorted((root / "test").glob("test_*.py"))
+            for path in sorted(
+                (root / "test").glob("test_core.py" if args.core_only else "test_*.py")
+            )
         ]
         suite = unittest.defaultTestLoader.loadTestsFromNames(tests)
         result = unittest.TextTestRunner(verbosity=2, failfast=args.failfast).run(suite)
-        from raster_tracer.test.utilities import stop_qgis_widgets
+        if not args.core_only:
+            from raster_tracer.test.utilities import stop_qgis_widgets
 
-        stop_qgis_widgets()
+            stop_qgis_widgets()
         faulthandler.cancel_dump_traceback_later()
         return 0 if result.wasSuccessful() else 1
 

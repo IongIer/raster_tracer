@@ -26,9 +26,7 @@ class SafeTranslationsTest(unittest.TestCase):
 
     def test_qgis_translations(self):
         """Test that translations work."""
-        parent_path = os.path.join(__file__, os.path.pardir, os.path.pardir)
-        dir_path = os.path.abspath(parent_path)
-        file_path = os.path.join(dir_path, "i18n", "af.qm")
+        file_path = os.path.join(os.path.dirname(__file__), "af.qm")
         if not os.path.isfile(file_path):
             self.skipTest("Optional Afrikaans translation fixture is not built")
         translator = QTranslator()

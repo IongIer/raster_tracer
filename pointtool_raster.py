@@ -1,395 +1,326 @@
-"""Raster sampling and pathfinding helpers for PointTool."""
+"""Bounded numerical preparation, plus the GUI sampler installation boundary."""
 
 import os
 import time
+from dataclasses import dataclass
 
 import numpy as np
+from osgeo import gdal
 from qgis.core import Qgis, QgsMessageLog, QgsProject
 from qgis.PyQt.QtGui import QColor
 
-from .exceptions import OutsideMapError
-from .utils import PossiblyIndexedImageError, get_whole_raster
+from .exceptions import (
+    InvalidRasterError,
+    OutsideMapError,
+    ResourceLimitError,
+    TraceCancelled,
+)
+from .utils import RasterSampler
 
-PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
+# Limits bound our allocations/counts, not GDAL caches or total process RSS.
+MAX_SEARCH_PIXELS = 8_388_608
+MAX_ARRAY_BYTES = 256 * 1024 * 1024
+SCRATCH_PIXELS = 65_536
+SCRATCH_BYTES = SCRATCH_PIXELS * 32
+# Reserve the worst-case GUI small-read cache, replacement, and snap scratch.
+# A 99-pixel radius is at most 199x199 pixels, independent of trace windows.
+CURSOR_RESERVE_BYTES = 6 * 1024 * 1024
+WINDOW_PADDING = 1024
+MIN_WINDOW_SIZE = 512
+
+
+def check_cancel(cancel):
+    if cancel():
+        raise TraceCancelled()
+
+
+def window_bounds(
+    indices, height, width, padding=WINDOW_PADDING, minimum=MIN_WINDOW_SIZE
+):
+    if not indices:
+        raise OutsideMapError("No endpoints")
+    for i, j in indices:
+        if not (0 <= i < height and 0 <= j < width):
+            raise OutsideMapError("Endpoint outside raster")
+
+    def dimension(values, length):
+        lo = max(0, min(values) - padding)
+        hi = min(length, max(values) + padding + 1)
+        needed = max(0, min(minimum, length) - (hi - lo))
+        lo = max(0, lo - needed // 2)
+        hi = min(length, max(hi, lo + min(minimum, length)))
+        lo = min(lo, hi - min(minimum, length))
+        return int(lo), int(hi)
+
+    top, bottom = dimension([p[0] for p in indices], height)
+    left, right = dimension([p[1] for p in indices], width)
+    return top, bottom, left, right
+
+
+def validate_budget(bounds, live_bytes=0):
+    top, bottom, left, right = bounds
+    pixels = (bottom - top) * (right - left)
+    if bottom <= top or right <= left:
+        raise InvalidRasterError("Empty raster window")
+    if pixels > MAX_SEARCH_PIXELS:
+        raise ResourceLimitError("Search pixel limit")
+    # RGB float64 (24), validity (1), costs (8), temporary GDAL/native band
+    # and mask/conversion headroom (9), bounded float64 computation scratch.
+    if (
+        live_bytes + pixels * 42 + SCRATCH_BYTES + CURSOR_RESERVE_BYTES
+        > MAX_ARRAY_BYTES
+    ):
+        raise ResourceLimitError("Raster array budget")
+    return pixels
+
+
+def read_rgb(dataset, source, bounds, cancel):
+    top, bottom, left, right = bounds
+    shape = (bottom - top, right - left)
+    if min(shape) <= 0:
+        raise InvalidRasterError("Empty raster read")
+    valid = np.ones(shape, dtype=bool)
+    bands = []
+    for number in source.bands:
+        check_cancel(cancel)
+        band = dataset.GetRasterBand(number)
+        array = band.ReadAsArray(left, top, shape[1], shape[0]) if band else None
+        if array is None or array.shape != shape or np.iscomplexobj(array):
+            raise InvalidRasterError("Malformed RGB band read")
+        converted = np.asarray(array, dtype=np.float64)
+        del array
+        mask_band = band.GetMaskBand()
+        mask = (
+            mask_band.ReadAsArray(left, top, shape[1], shape[0]) if mask_band else None
+        )
+        if mask is None or mask.shape != shape:
+            raise InvalidRasterError("Malformed validity mask read")
+        valid &= mask != 0
+        del mask
+        flat = converted.reshape(-1)
+        validity = valid.reshape(-1)
+        for offset in range(0, flat.size, SCRATCH_PIXELS):
+            check_cancel(cancel)
+            validity[offset : offset + SCRATCH_PIXELS] &= np.isfinite(
+                flat[offset : offset + SCRATCH_PIXELS]
+            )
+        converted.setflags(write=False)
+        bands.append(converted)
+    valid.setflags(write=False)
+    return tuple(bands), valid
+
+
+def color_cost(bands, valid, color, cancel=lambda: False):
+    if len(color) != 3 or not all(np.isfinite(c) for c in color):
+        raise InvalidRasterError("Nonfinite trace color")
+    cost = np.empty(valid.shape, dtype=np.int64)
+    flat_cost, flat_valid = cost.reshape(-1), valid.reshape(-1)
+    flat_bands = [band.reshape(-1) for band in bands]
+    for offset in range(0, cost.size, SCRATCH_PIXELS):
+        check_cancel(cancel)
+        end = min(cost.size, offset + SCRATCH_PIXELS)
+        mask = flat_valid[offset:end]
+        scratch = np.zeros(end - offset, dtype=np.float64)
+        with np.errstate(over="ignore", invalid="ignore"):
+            for values, target in zip(flat_bands, color):
+                delta = np.subtract(values[offset:end], target)
+                np.square(delta, out=delta)
+                scratch += delta
+        # Invalid cells are impassable; zero is only an unused storage value.
+        scratch[~mask] = 0
+        if (
+            np.any(~np.isfinite(scratch))
+            or np.any(scratch >= 2**63)
+            or np.any(scratch < 0)
+        ):
+            raise InvalidRasterError("Color cost outside int64 range")
+        flat_cost[offset:end] = scratch
+    cost.setflags(write=False)
+    return cost
+
+
+@dataclass(frozen=True)
+class RasterSnapshot:
+    source: object
+    bounds: tuple
+    bands: tuple
+    valid: object
+    cost: object = None
+    cost_key: object = None
+
+    @property
+    def nbytes(self):
+        return (
+            sum(b.nbytes for b in self.bands)
+            + self.valid.nbytes
+            + (self.cost.nbytes if self.cost is not None else 0)
+        )
+
+    def covers(self, source, bounds):
+        a, b, c, d = self.bounds
+        top, bottom, left, right = bounds
+        return (
+            self.source == source
+            and a <= top
+            and bottom <= b
+            and c <= left
+            and right <= d
+        )
+
+
+def prepare_snapshot(work, cached, cancel):
+    started = time.perf_counter()
+    validate_budget(work.bounds)
+    top, bottom, left, right = work.bounds
+    if not (
+        0 <= top < bottom <= work.source.height
+        and 0 <= left < right <= work.source.width
+    ):
+        raise InvalidRasterError("Window outside raster")
+    for row, col in (work.start, work.goal):
+        if not (top <= row < bottom and left <= col < right):
+            raise OutsideMapError("Endpoint outside search window")
+    check_cancel(cancel)
+    rgb_hit = cached is not None and cached.covers(work.source, work.bounds)
+    if rgb_hit:
+        snapshot = cached
+    else:
+        dataset = None
+        try:
+            dataset = gdal.OpenEx(
+                work.source.path,
+                gdal.OF_RASTER | gdal.OF_READONLY,
+                open_options=list(work.source.open_options),
+            )
+            if dataset is None or (dataset.RasterYSize, dataset.RasterXSize) != (
+                work.source.height,
+                work.source.width,
+            ):
+                raise InvalidRasterError("Raster source changed or cannot be opened")
+            bands, valid = read_rgb(dataset, work.source, work.bounds, cancel)
+            snapshot = RasterSnapshot(work.source, work.bounds, bands, valid)
+        finally:
+            dataset = None
+    read_duration = time.perf_counter() - started
+    top, _, left, _ = snapshot.bounds
+    start = (work.start[0] - top, work.start[1] - left)
+    goal = (work.goal[0] - top, work.goal[1] - left)
+    if not snapshot.valid[start] or not snapshot.valid[goal]:
+        raise InvalidRasterError("Invalid endpoint pixel")
+    color = (
+        work.color
+        if work.color is not None
+        else tuple(float(b[goal]) for b in snapshot.bands)
+    )
+    key = (work.color is not None, color, "float64/int64/masked-v1")
+    cost_hit = snapshot.cost is not None and snapshot.cost_key == key
+    started = time.perf_counter()
+    if not cost_hit:
+        # A previous cost may still be held by this worker on an auto-color miss.
+        # Account for it until replacement; the scheduler drops all other owners.
+        pixels = snapshot.valid.size
+        if (
+            snapshot.nbytes + pixels * 8 + SCRATCH_BYTES + CURSOR_RESERVE_BYTES
+            > MAX_ARRAY_BYTES
+        ):
+            raise ResourceLimitError("Cost snapshot budget")
+        costs = color_cost(snapshot.bands, snapshot.valid, color, cancel)
+        snapshot = RasterSnapshot(
+            snapshot.source, snapshot.bounds, snapshot.bands, snapshot.valid, costs, key
+        )
+    check_cancel(cancel)
+    a, b, c, d = work.bounds
+    view = (slice(a - top, b - top), slice(c - left, d - left))
+    # Views preserve the exact requested search graph regardless of cache history.
+    return (
+        snapshot,
+        snapshot.cost[view],
+        snapshot.valid[view],
+        {
+            "read": read_duration,
+            "cost": time.perf_counter() - started,
+            "rgb_cache_hit": rgb_hit,
+            "cost_cache_hit": cost_hit,
+            "copy_bytes": 0,
+            "array_bytes": snapshot.nbytes,
+        },
+    )
 
 
 class RasterTracingContext:
-    """Encapsulates raster sampling state and operations."""
-
     def __init__(self, tool):
         self._tool = tool
         self.raster_sampler = None
-        self.sample = None
-        self.grid = None
-        self.grid_changed = None
-        self.window_origin = None
-        self.window_shape = None
-        self.window_padding = 1024
-        self.min_window_size = 512
 
-    # ------------------------------------------------------------------
-    # Lifecycle helpers
-    # ------------------------------------------------------------------
     def reset(self):
-        self.sample = None
-        self.grid = None
-        self.grid_changed = None
-        self.window_origin = None
-        self.window_shape = None
+        self.raster_sampler = None
+        self._tool.to_indexes = self._tool.to_coords = None
 
-    def _clear_conversions(self):
-        tool = self._tool
-        tool.to_indexes = None
-        tool.to_coords = None
-        tool.to_coords_provider = None
-        tool.to_coords_provider2 = None
-
-    def ensure_sampler(self):
-        """Load a sampler for the current raster layer if required."""
-        tool = self._tool
-        if self.raster_sampler is not None or tool.rlayer is None:
-            return
-        try:
-            sampler = get_whole_raster(
-                tool.rlayer,
-                QgsProject.instance(),
-            )
-        except PossiblyIndexedImageError:
-            tool.display_message(
-                "Missing Layer",
-                "Can't trace indexed or gray image",
-                level="Critical",
-                duration=2,
-            )
-            self.raster_sampler = None
-            self.reset()
-            self._clear_conversions()
-            return
-
-        self.raster_sampler = sampler
-        tool.to_indexes = sampler.to_indexes
-        tool.to_coords = sampler.to_coords
-        tool.to_coords_provider = sampler.to_coords_provider
-        tool.to_coords_provider2 = sampler.to_coords_provider2
+    def _install_sampler(self, layer, reason):
+        started = time.perf_counter()
         self.reset()
-        self.recompute_trace_grid(reason="lazy-load")
-
-    def set_sampler_for_layer(self, layer):
-        """Load raster sampler for a newly selected layer."""
         if layer is None:
-            self.raster_sampler = None
-            self.reset()
-            self._clear_conversions()
             return False
-
         try:
-            sampler = get_whole_raster(
+            sampler = RasterSampler(
                 layer,
                 QgsProject.instance(),
+                self._tool.canvas().mapSettings().destinationCrs(),
             )
-        except PossiblyIndexedImageError:
-            self._tool.display_message(
-                "Missing Layer",
-                "Can't trace indexed or gray image",
-                level="Critical",
-                duration=2,
-            )
-            self.raster_sampler = None
-            self.reset()
-            self._clear_conversions()
+        except Exception as error:
+            self._tool.report_failure("invalid_input", str(error))
             return False
-
         self.raster_sampler = sampler
-        tool = self._tool
-        tool.to_indexes = sampler.to_indexes
-        tool.to_coords = sampler.to_coords
-        tool.to_coords_provider = sampler.to_coords_provider
-        tool.to_coords_provider2 = sampler.to_coords_provider2
-        self.reset()
-        self.recompute_trace_grid(reason="raster-change")
+        self._tool.to_indexes, self._tool.to_coords = (
+            sampler.to_indexes,
+            sampler.to_coords,
+        )
+        if os.environ.get("RASTER_TRACER_PROFILE", "0") == "1":
+            QgsMessageLog.logMessage(
+                f"[profiling] sampler reason={reason} duration={time.perf_counter() - started:.6f}s "
+                f"shape=({sampler.height},{sampler.width})",
+                "RasterTracer",
+                Qgis.MessageLevel.Info,
+            )
         return True
 
-    # ------------------------------------------------------------------
-    # Window management
-    # ------------------------------------------------------------------
-    def indices_inside_window(self, index):
-        if self.window_origin is None or self.window_shape is None:
-            return False
-        origin_i, origin_j = self.window_origin
-        height, width = self.window_shape
-        i, j = index
-        return origin_i <= i < origin_i + height and origin_j <= j < origin_j + width
+    def ensure_sampler(self):
+        if self.raster_sampler is None and self._tool.rlayer is not None:
+            return self._install_sampler(self._tool.rlayer, "lazy-load")
+        return self.raster_sampler is not None
 
-    def compute_window_bounds(self, indices, padding):
-        if self.raster_sampler is None:
-            return None
+    def set_sampler_for_layer(self, layer):
+        return self._install_sampler(layer, "raster-change")
 
-        height = self.raster_sampler.height
-        width = self.raster_sampler.width
+    def compute_window_bounds(self, indices, padding=WINDOW_PADDING):
+        sampler = self.raster_sampler
+        if sampler is None:
+            raise OutsideMapError("No raster")
+        return window_bounds(indices, sampler.height, sampler.width, padding)
 
-        clamped_i = []
-        clamped_j = []
-        for i, j in indices:
-            clamped_i.append(max(0, min(int(i), height - 1)))
-            clamped_j.append(max(0, min(int(j), width - 1)))
-
-        if not clamped_i or not clamped_j:
-            return None
-
-        min_i = min(clamped_i)
-        max_i = max(clamped_i)
-        min_j = min(clamped_j)
-        max_j = max(clamped_j)
-
-        target_padding = max(int(padding), 0)
-
-        i_min = max(0, min_i - target_padding)
-        i_max = min(height, max_i + target_padding + 1)
-        j_min = max(0, min_j - target_padding)
-        j_max = min(width, max_j + target_padding + 1)
-
-        min_height = min(self.min_window_size, height)
-        min_width = min(self.min_window_size, width)
-
-        current_height = i_max - i_min
-        if current_height < min_height:
-            needed = min_height - current_height
-            extend_top = min(i_min, needed // 2)
-            extend_bottom = min(height - i_max, needed - extend_top)
-            i_min = max(0, i_min - extend_top)
-            i_max = min(height, i_max + extend_bottom)
-
-        current_width = j_max - j_min
-        if current_width < min_width:
-            needed = min_width - current_width
-            extend_left = min(j_min, needed // 2)
-            extend_right = min(width - j_max, needed - extend_left)
-            j_min = max(0, j_min - extend_left)
-            j_max = min(width, j_max + extend_right)
-
-        return int(i_min), int(i_max), int(j_min), int(j_max)
-
-    def load_window(self, bounds, reason):
-        if bounds is None or self.raster_sampler is None:
-            return
-
-        i_min, i_max, j_min, j_max = bounds
-        load_start = time.perf_counter() if PROFILE_ENABLED else None
-
-        bands, origin, shape = self.raster_sampler.read_window(
-            i_min,
-            i_max,
-            j_min,
-            j_max,
-        )
-
-        if bands is None or shape == (0, 0):
-            return
-
-        prep_start = time.perf_counter() if PROFILE_ENABLED else None
-        cleaned_bands = [np.nan_to_num(band, copy=False) for band in bands]
-        prep_duration = (time.perf_counter() - prep_start) if PROFILE_ENABLED else None
-
-        grid_start = time.perf_counter() if PROFILE_ENABLED else None
-        grid = cleaned_bands[0] + cleaned_bands[1] + cleaned_bands[2]
-        grid_duration = (time.perf_counter() - grid_start) if PROFILE_ENABLED else None
-
-        self.sample = tuple(cleaned_bands)
-        self.grid = grid
-        self.window_origin = origin
-        self.window_shape = shape
-        self.grid_changed = None
-
-        total_duration = (time.perf_counter() - load_start) if PROFILE_ENABLED else None
-
-        if PROFILE_ENABLED:
-            color_bytes = sum(arr.nbytes for arr in self.sample)
-            grid_bytes = self.grid.nbytes if isinstance(self.grid, np.ndarray) else 0
-
-            def _fmt(value):
-                return f"{value:.2f}s" if value is not None else "n/a"
-
-            QgsMessageLog.logMessage(
-                (
-                    "[profiling] window_prepare "
-                    f"reason={reason} origin={origin} shape={shape} "
-                    f"prep={_fmt(prep_duration)} grid_sum={_fmt(grid_duration)} "
-                    f"total={_fmt(total_duration)} color_mb={(color_bytes / (1024**2)):.1f} "
-                    f"grid_mb={(grid_bytes / (1024**2)):.1f}"
-                ),
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
-
-        self.recompute_trace_grid(reason=f"window:{reason}")
-
-    def ensure_window_for_indices(self, indices, reason, padding=None):
-        if not indices:
-            return
-
-        self.ensure_sampler()
-        if self.raster_sampler is None:
-            return
-
-        if padding is None:
-            padding = self.window_padding
-
-        if all(self.indices_inside_window(index) for index in indices):
-            return
-
-        bounds = self.compute_window_bounds(indices, padding)
-        self.load_window(bounds, reason)
-
-    def to_local_indices(self, i, j):
-        if self.window_origin is None:
-            raise OutsideMapError
-        origin_i, origin_j = self.window_origin
-        local_i = i - origin_i
-        local_j = j - origin_j
-        if (
-            local_i < 0
-            or local_j < 0
-            or self.window_shape is None
-            or local_i >= self.window_shape[0]
-            or local_j >= self.window_shape[1]
-        ):
-            raise OutsideMapError
-        return local_i, local_j
-
-    # ------------------------------------------------------------------
-    # Grid preparation
-    # ------------------------------------------------------------------
-    def recompute_trace_grid(self, reason):
-        if (
-            not PROFILE_ENABLED
-            and self.sample is None
-            and self._tool.trace_color_value is None
-        ):
-            self.grid_changed = None
-            return
-
-        start_time = time.perf_counter() if PROFILE_ENABLED else None
-        diff_duration = None
-
-        if self.sample is None:
-            self.grid_changed = None
-            state = "no-sample"
-        elif self._tool.trace_color_value is None:
-            self.grid_changed = None
-            state = "cleared"
-        else:
-            compute_start = time.perf_counter() if PROFILE_ENABLED else None
-            r, g, b = self.sample
-            r0, g0, b0 = self._tool.trace_color_value
-            self.grid_changed = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 + (b0 - b) ** 2)
-            if PROFILE_ENABLED:
-                diff_duration = time.perf_counter() - compute_start
-            state = "computed"
-
-        if PROFILE_ENABLED:
-            total_duration = (
-                time.perf_counter() - start_time if start_time is not None else None
-            )
-            diff_text = f"{diff_duration:.2f}s" if diff_duration is not None else "n/a"
-            total_text = (
-                f"{total_duration:.2f}s" if total_duration is not None else "n/a"
-            )
-            grid_changed_bytes = (
-                self.grid_changed.nbytes
-                if isinstance(self.grid_changed, np.ndarray)
-                else 0
-            )
-            QgsMessageLog.logMessage(
-                (
-                    "[profiling] trace_color_changed "
-                    f"state={state} reason={reason} diff={diff_text} "
-                    f"total={total_text} grid_changed_mb={(grid_changed_bytes / (1024**2)):.1f}"
-                ),
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
-
-    def prepare_pathfinding(self, start, goal, reason):
-        self.ensure_window_for_indices([start, goal], reason=reason)
-
-        if self.sample is None or self.grid is None:
-            raise OutsideMapError
-
-        try:
-            local_start = self.to_local_indices(*start)
-            local_goal = self.to_local_indices(*goal)
-        except OutsideMapError:
-            self.ensure_window_for_indices(
-                [start, goal],
-                reason=f"{reason}-grow",
-                padding=self.window_padding * 2,
-            )
-            local_start = self.to_local_indices(*start)
-            local_goal = self.to_local_indices(*goal)
-
-        r, g, b = self.sample
-
-        try:
-            r0 = r[local_goal]
-            g0 = g[local_goal]
-            b0 = b[local_goal]
-        except IndexError:
-            raise OutsideMapError
-
-        if self.grid_changed is None:
-            grid_to_use = np.abs((r0 - r) ** 2 + (g0 - g) ** 2 + (b0 - b) ** 2)
-        else:
-            grid_to_use = self.grid_changed
-
-        grid_for_path = grid_to_use.astype(np.dtype("l"))
-        origin_i, origin_j = self.window_origin
-
-        return {
-            "grid": grid_for_path,
-            "local_start": local_start,
-            "local_goal": local_goal,
-            "origin": (origin_i, origin_j),
-        }
-
-    # ------------------------------------------------------------------
-    # Sampling helpers
-    # ------------------------------------------------------------------
     def sample_color_at_indices(self, i, j):
-        self.ensure_window_for_indices([(i, j)], reason="shortcut-sample")
-
-        if self.sample is None:
-            QgsMessageLog.logMessage(
-                "[shortcut] Sampling failed – raster data unavailable",
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
+        if not self.ensure_sampler():
             return None
-
-        try:
-            local_i, local_j = self.to_local_indices(i, j)
-        except OutsideMapError:
-            QgsMessageLog.logMessage(
-                "[shortcut] Sampling failed – indices outside window",
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
+        _, bands, valid = self.raster_sampler.read_small(i, j)
+        if not valid[0, 0]:
             return None
+        return QColor(*(max(0, min(255, round(float(b[0, 0])))) for b in bands))
 
-        try:
-            r_band, g_band, b_band = self.sample
-            r_val = float(r_band[local_i, local_j])
-            g_val = float(g_band[local_i, local_j])
-            b_val = float(b_band[local_i, local_j])
-        except (IndexError, TypeError, ValueError):
-            QgsMessageLog.logMessage(
-                "[shortcut] Sampling failed – invalid pixel data",
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
-            return None
-
-        r_int = int(np.clip(round(r_val), 0, 255))
-        g_int = int(np.clip(round(g_val), 0, 255))
-        b_int = int(np.clip(round(b_val), 0, 255))
-
-        return QColor(r_int, g_int, b_int)
+    def snap(self, i, j, radius, color):
+        if color is None or radius is None:
+            return i, j
+        bounds, bands, valid = self.raster_sampler.read_small(i, j, radius)
+        if not valid.any():
+            return i, j
+        cost = color_cost(bands, valid, color)
+        rows, cols = np.nonzero(valid)
+        # Inclusive clipped neighborhood; deterministic distance, row, column ties.
+        return min(
+            ((int(r + bounds[0]), int(c + bounds[2])) for r, c in zip(rows, cols)),
+            key=lambda p: (
+                int(cost[p[0] - bounds[0], p[1] - bounds[2]]),
+                (p[0] - i) ** 2 + (p[1] - j) ** 2,
+                p[0],
+                p[1],
+            ),
+        )

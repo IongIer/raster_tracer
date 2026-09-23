@@ -1,51 +1,46 @@
-"""
-Main functionality of raster tracer.
-"""
+"""GUI input, context validation and transactional geometry edits."""
 
 import math
-import os
-import time
-from collections import namedtuple
+from contextlib import contextmanager
+from dataclasses import replace
 from enum import Enum
 
-import numpy as np
 from qgis.core import (
     Qgis,
-    QgsApplication,
+    QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
-    QgsCsException,
+    QgsCoordinateTransformContext,
     QgsFeature,
     QgsFeatureRequest,
     QgsGeometry,
     QgsMessageLog,
-    QgsPoint,
     QgsPointXY,
     QgsProject,
     QgsRectangle,
-    QgsSpatialIndex,
     QgsVectorLayer,
 )
-from qgis.gui import QgsMapTool, QgsMapToolEdit, QgsRubberBand, QgsVertexMarker
-from qgis.PyQt.QtCore import Qt
+from qgis.gui import QgsMapToolEdit, QgsRubberBand, QgsVertexMarker
+from qgis.PyQt.QtCore import QCoreApplication, QPoint, Qt
 from qgis.PyQt.QtGui import QColor
 
-from .astar import FindPathFunction
 from .exceptions import OutsideMapError
-from .line_simplification import simplify, smooth
 from .pointtool_preview import TracePreviewController
 from .pointtool_raster import RasterTracingContext
-from .pointtool_states import WaitingFirstPointState
-from .pointtool_tasks import TraceTaskController
+from .pointtool_session import (
+    ResolvedEndpoint,
+    TraceContext,
+    TraceRequest,
+    TraceResult,
+    TraceSession,
+    UndoRecord,
+    as_xy,
+    new_id,
+)
+from .pointtool_states import WaitingFirstPointState, WaitingMiddlePointState
+from .pointtool_tasks import TraceTaskController, execute_request
+from .utils import get_coords_from_raster_indxs, get_indxs_from_raster_coords
 
-# An point on the map where the user clicked along the line
-Anchor = namedtuple("Anchor", ["x", "y", "i", "j"])
-
-# Flag for experimental Autofollowing mode
-ALLOW_AUTO_FOLLOWING = False
-
-# Default spacing for dense straight segments in layer units (≈5 m in projected CRS)
-DENSE_LINE_SPACING = 5.0
-
+DENSE_LINE_SPACING = 5.0  # Preserve existing spacing in vector layer units.
 SHORTCUT_KEYS = {
     Qt.Key.Key_A,
     Qt.Key.Key_B,
@@ -55,79 +50,17 @@ SHORTCUT_KEYS = {
     Qt.Key.Key_D,
 }
 
-PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
-
 
 class TracingModes(Enum):
-    """
-    Possible Tracing Modes for Pointtool.
-    LINE - straight line from start to end.
-    DENSE_LINE - straight line densified at fixed spacing.
-    PATH - tracing along color from start to end.
-    AUTO - auto tracing mode along color in the given direction.
-    """
-
     LINE = 1
     PATH = 2
-    AUTO = 3
     DENSE_LINE = 4
 
-    def next(self):
-        """
-        Switches between LINE and PATH
-        """
-        cls = self.__class__
-        members = list(cls)
-
-        if not ALLOW_AUTO_FOLLOWING:
-            return members[0] if self.value == 2 else members[1]
-
-        index = members.index(self) + 1
-        if index >= len(members):
-            index = 0
-        return members[index]
-
     def is_tracing(self):
-        """
-        Returns True if mode is PATH
-        """
-        return True if self.value == 2 else False
-
-    def is_auto(self):
-        """
-        Returns True if mode is PATH
-        """
-        return True if self.value == 3 else False
-
-
-# Line styles for the rubber band
-RUBBERBAND_LINE_STYLES = {
-    TracingModes.PATH: Qt.PenStyle.DotLine,
-    TracingModes.LINE: Qt.PenStyle.SolidLine,
-    TracingModes.AUTO: Qt.PenStyle.DashDotLine,
-    TracingModes.DENSE_LINE: Qt.PenStyle.SolidLine,
-}
-
-RUBBERBAND_COLORS = {
-    TracingModes.PATH: QColor(255, 0, 0),
-    TracingModes.LINE: QColor(255, 0, 0),
-    TracingModes.AUTO: QColor(255, 0, 0),
-    TracingModes.DENSE_LINE: QColor(0, 102, 255),
-}
+        return self == TracingModes.PATH
 
 
 class PointTool(QgsMapToolEdit):
-    """
-    Implementation of interactions of the user with the main map.
-    Will called every time the user clicks on the map
-    or hovers the mouse over the map.
-    """
-
-    def deactivate(self):
-        QgsMapTool.deactivate(self)
-        self.clear_preview()
-        self.deactivated.emit()
-
     def __init__(
         self,
         canvas,
@@ -136,128 +69,416 @@ class PointTool(QgsMapToolEdit):
         smooth=False,
         ensure_trace_color_enabled=None,
         set_trace_color=None,
+        scheduler=None,
     ):
-        """
-        canvas - link to the QgsCanvas of the application
-        iface - link to the Qgis Interface
-        turn_off_snap - flag sets snapping to the nearest color
-        smooth - flag sets smoothing of the traced path
-        ensure_trace_color_enabled - callback enabling trace-color mode in UI
-        set_trace_color - callback syncing sampled color back to UI control
-        """
-
+        super().__init__(canvas)
         self.iface = iface
-
-        # list of Anchors for current line
-        self.anchors = []
-
-        # for keeping track of mouse event for rubber band updating
+        self.session = TraceSession()
+        self.owner = new_id()
+        self.disposed = False
+        self.suspended = True
+        self._own_edit = False
+        self._connections = []
+        self._raster_connections = []
+        self._target_connections = []
+        self._context = None
+        self.rlayer = None
+        self.to_indexes = self.to_coords = None
         self.last_mouse_event_pos = None
-
-        self.tracing_mode = TracingModes.PATH
-
+        self._tracing_mode = TracingModes.PATH
+        self._smooth_line = bool(smooth)
+        self.snap_tolerance = self.snap2_tolerance = None
+        self.trace_color_value = None
         self.turn_off_snap = turn_off_snap
-        self.smooth_line = smooth
         self._enable_trace_color_cb = ensure_trace_color_enabled
         self._set_trace_color_cb = set_trace_color
-
-        # possible variants: gray_diff, as_is, color_diff (using v from hsv)
-        self.grid_conversion = "gray_diff"
-
-        # QApplication.restoreOverrideCursor()
-        # QApplication.setOverrideCursor(Qt.CursorShape.CrossCursor)
-        super().__init__(canvas)
-
-        self.rlayer = None
-        self.snap_tolerance = None  # snap to color
-        self.snap2_tolerance = None  # snap to itself
-        self.vlayer = None
-        self.to_indexes = None
-        self.to_coords = None
-        self.to_coords_provider = None
-        self.to_coords_provider2 = None
-        self.trace_color_value = None
-        self.preview_controller = TracePreviewController(self)
-        self.task_controller = TraceTaskController(self)
+        self.task_controller = scheduler or TraceTaskController()
         self.raster_context = RasterTracingContext(self)
-
-        self.tracking_is_active = False
-        self.current_feature_id = None
-        self._has_optimistic_anchor = False
-        self._task_generation = 0
-        self._active_task_generation = None
-
-        # False = not a polygon
-        self.rubber_band = QgsRubberBand(self.canvas(), Qgis.GeometryType.Line)
-        self.markers = []
-        self.marker_snap = QgsVertexMarker(self.canvas())
+        self.rubber_band = QgsRubberBand(canvas, Qgis.GeometryType.Line)
+        self.marker_snap = QgsVertexMarker(canvas)
         self.marker_snap.setColor(QColor(255, 0, 255))
+        self.marker_snap.hide()
+        self.markers = []
+        self._pending_markers = {}
+        self.preview_controller = TracePreviewController(self)
+        self._sync_state()
+        project = QgsProject.instance()
+        self._connect(
+            canvas, "destinationCrsChanged", self._context_changed, self._connections
+        )
+        self._connect(project, "crsChanged", self._context_changed, self._connections)
+        self._connect(
+            project, "transformContextChanged", self._context_changed, self._connections
+        )
+        self._connect(
+            project, "layersWillBeRemoved", self._layers_removed, self._connections
+        )
+        self._connect(
+            iface.layerTreeView(),
+            "currentLayerChanged",
+            self._target_changed,
+            self._connections,
+        )
 
-        self.change_state(WaitingFirstPointState)
+    @staticmethod
+    def _connect(obj, name, callback, collection):
+        signal = getattr(obj, name, None)
+        if signal is not None:
+            signal.connect(callback)
+            collection.append((signal, callback))
 
-        self.last_vlayer = None
+    @staticmethod
+    def _disconnect(collection):
+        while collection:
+            signal, callback = collection.pop()
+            try:
+                signal.disconnect(callback)
+            except (RuntimeError, TypeError):
+                pass
 
-    def display_message(
-        self,
-        title,
-        message,
-        level="Info",
-        duration=2,
-    ):
-        """
-        Shows message bar to the user.
-        `level` receives one of four possible string values:
-            Info, Warning, Critical, Success
-        """
+    @property
+    def anchors(self):
+        return tuple(self.session.anchors)
 
-        LEVELS = {
-            "Info": Qgis.MessageLevel.Info,
-            "Warning": Qgis.MessageLevel.Warning,
-            "Critical": Qgis.MessageLevel.Critical,
-            "Success": Qgis.MessageLevel.Success,
-        }
+    @property
+    def current_feature_id(self):
+        return self.session.feature_id
 
-        self.iface.messageBar().pushMessage(title, message, LEVELS[level], duration)
+    @property
+    def tracking_is_active(self):
+        return self.session.pending is not None
 
-    def change_state(self, state):
-        self.state = state(self)
+    @property
+    def smooth_line(self):
+        return self._smooth_line
 
-    def snap_tolerance_changed(self, snap_tolerance):
-        self.snap_tolerance = snap_tolerance
-        self.clear_preview()
-        if snap_tolerance is None:
-            self.marker_snap.hide()
-        else:
-            self.marker_snap.show()
+    @smooth_line.setter
+    def smooth_line(self, value):
+        if bool(value) != self._smooth_line:
+            self._smooth_line = bool(value)
+            self._semantic_changed()
 
-    def snap2_tolerance_changed(self, snap_tolerance):
-        if snap_tolerance is None:
-            self.snap2_tolerance = None
+    @property
+    def tracing_mode(self):
+        return self._tracing_mode
+
+    @tracing_mode.setter
+    def tracing_mode(self, value):
+        if value != self._tracing_mode:
+            self._tracing_mode = value
+            self._semantic_changed()
+
+    def activate(self):
+        if self.disposed:
             return
+        self.suspended = False
+        # A suspended tool can be reused after project changes.
+        self.raster_context.set_sampler_for_layer(self.rlayer)
+        super().activate()
 
+    def deactivate(self):
+        self.suspend()
+        super().deactivate()  # QgsMapTool emits deactivated exactly once.
+
+    def suspend(self):
+        if self.disposed:
+            return
+        self.suspended = True
+        self.finish_session()
+        self.last_mouse_event_pos = None
+        self.marker_snap.hide()
+
+    def dispose(self):
+        if self.disposed:
+            return
+        self.suspend()
+        self.disposed = True
+        self._disconnect(self._connections)
+        self._disconnect(self._raster_connections)
+        self._disconnect(self._target_connections)
+        self.preview_controller.dispose()
+        for item in (self.rubber_band, self.marker_snap):
+            self.canvas().scene().removeItem(item)
+        self.raster_context.reset()
+        self.rlayer = None
+        self.turn_off_snap = self._enable_trace_color_cb = self._set_trace_color_cb = (
+            None
+        )
+
+    def _sync_state(self):
+        cls = (
+            WaitingMiddlePointState if self.session.anchors else WaitingFirstPointState
+        )
+        self.state = cls(self)
+
+    def _remove_pending_markers(self):
+        for marker in self._pending_markers.values():
+            self.canvas().scene().removeItem(marker)
+        self._pending_markers.clear()
+
+    def _cancel_inflight_segment(self):
+        self.session.invalidate()  # Revoke identity before requesting cancellation.
+        self.task_controller.cancel(self.owner)
+        self.preview_controller.clear(cancel=False)
+        self._remove_pending_markers()
+        self.update_rubber_band()
+
+    def finish_session(self):
+        self.session.reset()
+        self.task_controller.cancel(self.owner)
+        self.preview_controller.clear(cancel=False)
+        self._remove_pending_markers()
+        while self.markers:
+            self.canvas().scene().removeItem(self.markers.pop())
+        self.rubber_band.hide()
+        self.marker_snap.hide()
+        self._context = None
+        self._disconnect(self._target_connections)
+        self._sync_state()
+
+    def _semantic_changed(self):
+        if self.disposed:
+            return
+        hover = self.last_mouse_event_pos
+        self._cancel_inflight_segment()
+        if hover is not None and self.anchors and not self.suspended:
+            self._hover(hover)
+
+    def _context_changed(self, *args):
+        if self.disposed:
+            return
+        self.finish_session()
+        self.raster_context.set_sampler_for_layer(self.rlayer)
+
+    def _target_changed(self, *args):
+        if self.disposed or not self.session.target_id:
+            return
+        layer = self.get_current_vector_layer()
+        if layer is None or layer.id() != self.session.target_id:
+            self.finish_session()
+
+    def _external_edit(self, *args):
+        if not self.disposed and not self._own_edit:
+            self.finish_session()
+
+    def _layers_removed(self, ids):
+        if self.disposed:
+            return
+        if self.rlayer is not None and self.rlayer.id() in ids:
+            self.raster_layer_has_changed(None)
+        elif self.session.target_id in ids:
+            self.finish_session()
+
+    def raster_layer_has_changed(self, layer):
+        if self.disposed:
+            return
+        self.finish_session()
+        self._disconnect(self._raster_connections)
+        self.rlayer = layer
+        self.raster_context.set_sampler_for_layer(layer)
+        if layer is not None:
+            for signal in ("crsChanged", "dataChanged", "isValidChanged"):
+                self._connect(
+                    layer, signal, self._context_changed, self._raster_connections
+                )
+
+    def _observe_target(self, layer):
+        self._disconnect(self._target_connections)
+        for signal in (
+            "geometryChanged",
+            "featureAdded",
+            "featureDeleted",
+            "editingStopped",
+            "beforeRollBack",
+            "beforeCommitChanges",
+            "updatedFields",
+        ):
+            self._connect(layer, signal, self._external_edit, self._target_connections)
+        self._connect(
+            layer, "crsChanged", self._context_changed, self._target_connections
+        )
+        self._connect(
+            layer.undoStack(),
+            "indexChanged",
+            self._external_edit,
+            self._target_connections,
+        )
+
+    def get_current_vector_layer(self):
+        layer = self.iface.activeLayer()
+        if (
+            isinstance(layer, QgsVectorLayer)
+            and layer.isValid()
+            and layer.wkbType()
+            in (Qgis.WkbType.MultiLineString, Qgis.WkbType.MultiCurve)
+        ):
+            return layer
+        return None
+
+    def _capture_context(self, layer):
+        sampler = self.raster_context.raster_sampler
+        if sampler is None:
+            raise OutsideMapError("No RGB raster selected")
+        working = QgsCoordinateReferenceSystem(
+            self.canvas().mapSettings().destinationCrs()
+        )
+        vector = QgsCoordinateReferenceSystem(layer.crs())
+        raster = QgsCoordinateReferenceSystem(self.rlayer.crs())
+        transform_context = QgsCoordinateTransformContext(
+            QgsProject.instance().transformContext()
+        )
+        return TraceContext(
+            self.rlayer.id(),
+            sampler.source,
+            raster,
+            working,
+            vector,
+            transform_context,
+            sampler.geo_ref,
+            QgsCoordinateTransform(raster, working, transform_context),
+            QgsCoordinateTransform(working, vector, transform_context),
+        )
+
+    def _valid_request(self, request):
+        # These primitive guards must precede access to possibly deleted Qt objects.
+        if (
+            self.disposed
+            or self.suspended
+            or request.owner != self.owner
+            or not self.session.matches(request)
+        ):
+            return False
+        project = QgsProject.instance()
+        layer = project.mapLayer(request.target_id)
+        raster = project.mapLayer(request.context.raster_id)
+        if (
+            layer is None
+            or raster is None
+            or not layer.isEditable()
+            or not raster.isValid()
+        ):
+            return False
+        if layer is not self.get_current_vector_layer():
+            return False
+        sampler = self.raster_context.raster_sampler
+        ctx = request.context
+        if (
+            sampler is None
+            or sampler.source != ctx.source
+            or raster.source() != ctx.source.path
+            or layer.crs() != ctx.vector_crs
+            or raster.crs() != ctx.raster_crs
+            or self.canvas().mapSettings().destinationCrs() != ctx.working_crs
+            or project.transformContext() != ctx.transform_context
+        ):
+            return False
+        if (
+            request.feature_id is not None
+            and not layer.getFeature(request.feature_id).isValid()
+        ):
+            return False
+        return True
+
+    def resolve_endpoint(self, point):
+        x, y = as_xy(point)
+        if not all(math.isfinite(v) for v in (x, y)) or self.to_indexes is None:
+            raise OutsideMapError("No valid raster endpoint")
+
+        def indexes(x, y):
+            if self.tracing_mode.is_tracing():
+                return self.to_indexes(x, y)
+            sampler = self.raster_context.raster_sampler
+            return get_indxs_from_raster_coords(
+                sampler.geo_ref, sampler.trfm_to_src.transform(x, y)
+            )
+
+        i, j = indexes(x, y)
+        if self.tracing_mode.is_tracing():
+            if self.snap_tolerance is not None and self.trace_color_value is not None:
+                i, j = self.snap(i, j)
+                x, y = as_xy(self.to_coords(i, j))
+        if self.snap2_tolerance is not None:
+            x, y = self.snap_to_itself(x, y, self.snap2_tolerance)
+        i, j = indexes(x, y)
+        return ResolvedEndpoint(x, y, i, j)
+
+    def snap(self, i, j):
+        return self.raster_context.snap(
+            i, j, self.snap_tolerance, self.trace_color_value
+        )
+
+    def snap_to_itself(self, x, y, tolerance=1):
+        """Nearest vertex in canvas map units, including the tolerance boundary."""
+        layer = self.get_current_vector_layer()
+        if (
+            layer is None
+            or tolerance is None
+            or not math.isfinite(tolerance)
+            or tolerance < 0
+        ):
+            return x, y
+        working = self.canvas().mapSettings().destinationCrs()
+        context = QgsProject.instance().transformContext()
         try:
-            snap_value = float(snap_tolerance)
-        except (TypeError, ValueError):
-            return
+            to_layer = QgsCoordinateTransform(working, layer.crs(), context)
+            to_map = QgsCoordinateTransform(layer.crs(), working, context)
+            rectangle = QgsRectangle(
+                x - tolerance, y - tolerance, x + tolerance, y + tolerance
+            )
+            rectangle = to_layer.transformBoundingBox(rectangle)
+            if not all(
+                math.isfinite(v)
+                for v in (
+                    rectangle.xMinimum(),
+                    rectangle.xMaximum(),
+                    rectangle.yMinimum(),
+                    rectangle.yMaximum(),
+                )
+            ):
+                return x, y
+            request = (
+                QgsFeatureRequest().setSubsetOfAttributes([]).setFilterRect(rectangle)
+            )
+            best = None
+            for feature in layer.getFeatures(request):
+                # Transform every vertex before comparing distances; layer-space
+                # nearest vertices can differ under anisotropic CRS transforms.
+                for index, vertex in enumerate(feature.geometry().vertices()):
+                    sx, sy = as_xy(to_map.transform(QgsPointXY(vertex)))
+                    distance = (sx - x) ** 2 + (sy - y) ** 2
+                    key = (distance, feature.id(), index)
+                    if distance <= tolerance**2 and (best is None or key < best[0]):
+                        best = key, (sx, sy)
+            return best[1] if best is not None else (x, y)
+        except Exception:
+            return x, y
 
-        self.snap2_tolerance = snap_value**2
-        # if snap_tolerance is None:
-        #     self.marker_snap.hide()
-        # else:
-        #     self.marker_snap.show()
+    def snap_tolerance_changed(self, value):
+        if value is not None:
+            value = int(value)
+            if not 0 <= value <= 99:
+                raise ValueError("Color snap radius must be between 0 and 99")
+        if value != self.snap_tolerance:
+            self.snap_tolerance = value
+            self._semantic_changed()
+
+    def snap2_tolerance_changed(self, value):
+        if value is not None:
+            value = float(value)
+            if not math.isfinite(value) or value < 0:
+                return
+        if value != self.snap2_tolerance:
+            self.snap2_tolerance = value
+            self._semantic_changed()
 
     def trace_color_changed(self, color):
-        if color is False:
-            self.trace_color_value = None
-        else:
-            r0, g0, b0, _ = color.getRgb()
-            self.trace_color_value = (float(r0), float(g0), float(b0))
+        value = None if color is False else tuple(float(v) for v in color.getRgb()[:3])
+        if value != self.trace_color_value:
+            self.trace_color_value = value
+            self._semantic_changed()
 
-        self._recompute_trace_grid(reason="manual")
-        self.preview_controller.restart_last_request()
-
-    def set_preview_enabled(self, enabled):
-        self.preview_controller.set_enabled(enabled)
+    def set_preview_enabled(self, value):
+        self.preview_controller.set_enabled(value)
 
     def set_preview_color(self, color):
         self.preview_controller.set_color(color)
@@ -266,1025 +487,416 @@ class PointTool(QgsMapToolEdit):
         self.preview_controller.set_width(width)
 
     def clear_preview(self):
-        self.preview_controller.clear()
-
-    def _cancel_inflight_segment(self):
-        """
-        Abort any running preview/trace segment and roll back optimistic state.
-        """
-        pending_commit = self.preview_controller.has_pending_commit()
-        task_active = self.task_controller.active
-        was_tracking = self.tracking_is_active
-        self._active_task_generation = None
-
-        self.preview_controller.clear_commit()
-        self.preview_controller.clear()
-
-        self.task_controller.cancel()
-
-        should_pop_anchor = self._has_optimistic_anchor and (
-            was_tracking or pending_commit or task_active
-        )
-        if should_pop_anchor and self.anchors:
-            if self.markers:
-                marker = self.markers.pop()
-                try:
-                    self.canvas().scene().removeItem(marker)
-                except RuntimeError:
-                    pass
-            self.anchors.pop()
-            self.update_rubber_band()
-            self.redraw()
-
-        self._has_optimistic_anchor = False
-        self.tracking_is_active = False
-
-    def _take_preview_path_if_valid(self, start_point, end_point, click_pos):
-        return self.preview_controller.take_path_if_valid(
-            start_point, end_point, click_pos
-        )
-
-    def _has_inflight_preview_for(self, start_point, end_point):
-        return self.preview_controller.has_inflight_preview_for(start_point, end_point)
-
-    def _ensure_preview_inflight_started(self):
-        self.preview_controller.ensure_inflight_started()
-
-    def _queue_preview(self, start, goal, screen_pos=None):
-        self.preview_controller.queue(start, goal, screen_pos)
-
-    def has_pending_preview_commit(self):
-        return self.preview_controller.has_pending_commit()
-
-    def _ensure_sampler(self):
-        self.raster_context.ensure_sampler()
-
-    def _ensure_window_for_indices(self, indices, reason, padding=None):
-        self.raster_context.ensure_window_for_indices(indices, reason, padding)
-
-    def _to_local_indices(self, i, j):
-        return self.raster_context.to_local_indices(i, j)
-
-    def _recompute_trace_grid(self, reason):
-        self.raster_context.recompute_trace_grid(reason)
-
-    def _prepare_pathfinding(self, start, goal, reason):
-        return self.raster_context.prepare_pathfinding(start, goal, reason)
-
-    def get_current_vector_layer(self):
-        try:
-            vlayer = self.iface.layerTreeView().selectedLayers()[0]
-            if isinstance(vlayer, QgsVectorLayer):
-                if vlayer.wkbType() == Qgis.WkbType.MultiLineString:
-                    # if self.last_vlayer:
-                    #     if vlayer != self.last_vlayer:
-                    #         self.create_spatial_index_for_vlayer(vlayer)
-                    # else:
-                    #     self.create_spatial_index_for_vlayer(vlayer)
-                    # self.last_vlayer = vlayer
-                    return vlayer
-                else:
-                    self.display_message(
-                        " ",
-                        "The active layer must be" + " a MultiLineString vector layer",
-                        level="Warning",
-                        duration=2,
-                    )
-                    return None
-            else:
-                self.display_message(
-                    "Missing Layer",
-                    "Please select vector layer to draw",
-                    level="Warning",
-                    duration=2,
-                )
-                return None
-        except IndexError:
-            self.display_message(
-                "Missing Layer",
-                "Please select vector layer to draw",
-                level="Warning",
-                duration=2,
-            )
-            return None
-
-    def raster_layer_has_changed(self, raster_layer):
-        self.rlayer = raster_layer
-        if self.rlayer is None:
-            self.display_message(
-                "Missing Layer",
-                "Please select raster layer to trace",
-                level="Warning",
-                duration=2,
-            )
-            self.raster_context.set_sampler_for_layer(None)
-            return
-
-        self.clear_preview()
-
-        total_start = time.perf_counter() if PROFILE_ENABLED else None
-
-        loaded = self.raster_context.set_sampler_for_layer(self.rlayer)
-        if not loaded:
-            return
-
-        if PROFILE_ENABLED:
-            total_duration = (
-                time.perf_counter() - total_start if total_start is not None else None
-            )
-            total_text = (
-                f"{total_duration:.2f}s" if total_duration is not None else "n/a"
-            )
-            sampler = self.raster_context.raster_sampler
-            raster_size = (
-                sampler.height if sampler else 0,
-                sampler.width if sampler else 0,
-            )
-            QgsMessageLog.logMessage(
-                (
-                    "[profiling] raster_layer_has_changed "
-                    f"size={raster_size} total={total_text}"
-                ),
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
-
-    def remove_last_anchor_point(self, undo_edit=True, redraw=True):
-        """
-        Removes last anchor point and last marker point
-        """
-
-        self.clear_preview()
-
-        # check if we have at least one feature to delete
-        vlayer = self.get_current_vector_layer()
-        if vlayer is None:
-            return
-        if vlayer.featureCount() < 1:
-            return
-
-        # remove last marker
-        if self.markers:
-            last_marker = self.markers.pop()
-            self.canvas().scene().removeItem(last_marker)
-
-        # remove last anchor
-        if self.anchors:
-            self.anchors.pop()
-
-        if undo_edit and vlayer is not None and vlayer.isEditable():
-            # it's a very ugly way of triggering single undo event
-            self.iface.editMenu().actions()[0].trigger()
-
-        if not self.anchors:
-            self.current_feature_id = None
-            self.change_state(WaitingFirstPointState)
-            self.rubber_band.hide()
-
-        if redraw:
-            self.update_rubber_band()
-            self.redraw()
-        self._has_optimistic_anchor = False
-
-    def keyPressEvent(self, e):
-        if e.key() == Qt.Key.Key_B:
-            # delete last segment if backspace is pressed
+        pending = self.session.pending
+        if pending is not None and pending.adopted_preview:
             self._cancel_inflight_segment()
-            self.remove_last_anchor_point()
-        elif e.key() == Qt.Key.Key_A:
-            # toggle between path following and straight line modes
-            if self.tracing_mode != TracingModes.LINE:
-                self.tracing_mode = TracingModes.LINE
+        else:
+            self.preview_controller.clear()
+
+    def make_request(self, endpoint, screen_pos=None):
+        if not self.anchors or self._context is None:
+            raise OutsideMapError("No initial anchor")
+        start = self.anchors[-1]
+        bounds = (
+            self.raster_context.compute_window_bounds([start.pixel, endpoint.pixel])
+            if self.tracing_mode.is_tracing()
+            else ()
+        )
+        return TraceRequest(
+            new_id(),
+            self.owner,
+            self.session.session_id,
+            self.session.revision,
+            self._context,
+            start,
+            endpoint,
+            self.session.target_id,
+            self.session.feature_id,
+            self.tracing_mode.name,
+            self.smooth_line,
+            self.trace_color_value,
+            bounds,
+            as_xy(screen_pos) if screen_pos is not None else None,
+        )
+
+    def accept_click(self, point, screen_pos=None):
+        if self.disposed or self.suspended or self.tracking_is_active:
+            return
+        self._target_changed()
+        layer = self.get_current_vector_layer()
+        if layer is None or not layer.isEditable():
+            self.report_failure("invalid_input")
+            return
+        try:
+            endpoint = self.resolve_endpoint(point)
+            if not self.anchors:
+                self._context = self._capture_context(layer)
+                self.session.bind(layer.id(), endpoint)
+                self._observe_target(layer)
+                self.markers.append(self._marker(endpoint))
+                self._sync_state()
+                return
+            if endpoint.xy == self.anchors[-1].xy:
+                return
+            request = self.make_request(endpoint, screen_pos)
+            if not self._valid_request(request):
+                self.finish_session()
+                return
+            cached = self.preview_controller.matching_cached(request)
+            adopted = self.preview_controller.matching_request(request)
+            if adopted is not None and cached is None:
+                request = replace(request, request_id=adopted.request_id)
+            self.session.begin(
+                request, adopted=adopted is not None or cached is not None
+            )
+            self._pending_markers[request.request_id] = self._marker(endpoint)
+            if request.mode != "PATH":
+                self._on_result(request, TraceResult(request.request_id, "success"))
+            elif cached is not None:
+                self._on_result(request, replace(cached, request_id=request.request_id))
+            elif adopted is not None:
+                self.preview_controller.start_adopted(request.request_id)
             else:
-                self.tracing_mode = TracingModes.PATH
-            self.update_rubber_band()
-            if not self.tracing_mode.is_tracing():
-                self.clear_preview()
-        elif e.key() == Qt.Key.Key_D:
-            # toggle dense straight line mode
-            if self.tracing_mode != TracingModes.DENSE_LINE:
-                self.tracing_mode = TracingModes.DENSE_LINE
-            else:
-                self.tracing_mode = TracingModes.PATH
-            self.update_rubber_band()
-            if not self.tracing_mode.is_tracing():
-                self.clear_preview()
-        elif e.key() == Qt.Key.Key_S:
-            # toggle snap mode
-            self.turn_off_snap()
-            self.clear_preview()
-        elif e.key() == Qt.Key.Key_Escape:
-            # Abort tracing process
-            self.abort_tracing_process()
-        elif e.key() == Qt.Key.Key_T:
-            self._handle_trace_color_shortcut()
+                self.preview_controller.clear()
+                if not self.task_controller.submit(
+                    request, self._on_result, committed=True
+                ):
+                    self._finish_pending(request.request_id)
+        except Exception as error:
+            if self.session.pending is not None:
+                self._finish_pending(self.session.pending.request.request_id)
+            self.report_failure("invalid_input", str(error))
 
-    def add_anchor_points(self, x1, y1, i1, j1):
-        """
-        Adds anchor points and markers to self.
-        """
-
-        anchor = Anchor(x1, y1, i1, j1)
-        self.anchors.append(anchor)
-        self._has_optimistic_anchor = len(self.anchors) >= 2
-
+    def _marker(self, endpoint):
         marker = QgsVertexMarker(self.canvas())
-        marker.setCenter(QgsPointXY(x1, y1))
-        self.markers.append(marker)
+        marker.setCenter(QgsPointXY(*endpoint.xy))
+        return marker
+
+    def _finish_pending(self, request_id):
+        if not self.session.finish(request_id):
+            return
+        marker = self._pending_markers.pop(request_id, None)
+        if marker is not None:
+            self.canvas().scene().removeItem(marker)
+        self.preview_controller.clear(cancel=False)
+        self.update_rubber_band()
+
+    def _on_result(self, request, result):
+        if result.request_id != request.request_id:
+            return
+        if not self._valid_request(request):
+            if (
+                not self.disposed
+                and not self.suspended
+                and self.session.matches(request)
+            ):
+                self.finish_session()
+            return
+        pending = self.session.pending
+        if pending is not None and pending.request.request_id == result.request_id:
+            request = pending.request  # Accepted click's exact map endpoints.
+            if result.status == "success":
+                self._commit(request, result)
+            else:
+                self._finish_pending(result.request_id)
+                if result.status != "cancelled":
+                    self.report_failure(result.status, result.diagnostics)
+        elif pending is None:
+            self.preview_controller.receive(request, result)
+
+    def build_path_points(self, request, result, *, in_layer_crs):
+        """Share path/endpoints, converting only to the caller's required CRS."""
+        ctx = request.context
+        if request.mode == "PATH":
+            top, left = result.origin
+            points = [
+                as_xy(
+                    ctx.raster_to_map.transform(
+                        *get_coords_from_raster_indxs(ctx.geo_ref, (i + top, j + left))
+                    )
+                )
+                for i, j in result.processed
+            ]
+            if not points:
+                raise ValueError("Empty path")
+            if len(points) == 1:
+                points.append(points[0])
+            points[0], points[-1] = request.start.xy, request.goal.xy
+        else:
+            points = [request.start.xy, request.goal.xy]
+        if not all(math.isfinite(v) for point in points for v in point):
+            raise ValueError("Nonfinite transformed geometry")
+        if in_layer_crs:
+            points = [as_xy(ctx.map_to_vector.transform(*p)) for p in points]
+            if request.mode == "DENSE_LINE":
+                a, b = points
+                length = math.hypot(b[0] - a[0], b[1] - a[1])
+                fractions = (
+                    [0.5]
+                    if 0 < length < DENSE_LINE_SPACING
+                    else [
+                        step * DENSE_LINE_SPACING / length
+                        for step in range(1, int(length // DENSE_LINE_SPACING) + 1)
+                        if step * DENSE_LINE_SPACING < length
+                    ]
+                )
+                points = (
+                    [a]
+                    + [
+                        (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+                        for f in fractions
+                    ]
+                    + [b]
+                )
+            if not all(math.isfinite(v) for point in points for v in point):
+                raise ValueError("Nonfinite transformed geometry")
+        return [QgsPointXY(*p) for p in points]
+
+    @contextmanager
+    def _editing(self):
+        previous = self._own_edit
+        self._own_edit = True
+        try:
+            yield
+        finally:
+            self._own_edit = previous
+
+    def _commit(self, request, result):
+        layer = None
+        command_open = False
+        try:
+            if not self._valid_request(request):
+                self._finish_pending(request.request_id)
+                return
+            layer = QgsProject.instance().mapLayer(request.target_id)
+            points = self.build_path_points(request, result, in_layer_crs=True)
+            feature = None
+            if request.feature_id is None:
+                feature = QgsFeature(layer.fields())
+                geometry = QgsGeometry.fromMultiPolylineXY([points])
+                feature.setGeometry(geometry)
+            else:
+                feature = layer.getFeature(request.feature_id)
+                if not feature.isValid():
+                    raise ValueError("Target feature disappeared")
+                lines = feature.geometry().asMultiPolyline()
+                if not lines or not lines[-1]:
+                    raise ValueError("Target line is empty")
+                lines[-1].extend(points[1:] if lines[-1][-1] == points[0] else points)
+                geometry = QgsGeometry.fromMultiPolylineXY(lines)
+            # Validate again immediately before editing, after all transforms.
+            if not self._valid_request(request):
+                self._finish_pending(request.request_id)
+                return
+            with self._editing():
+                layer.beginEditCommand(self.tr("Trace raster segment"))
+                command_open = True
+                ok = (
+                    layer.addFeature(feature)
+                    if request.feature_id is None
+                    else layer.changeGeometry(request.feature_id, geometry)
+                )
+                if not ok:
+                    raise RuntimeError("Geometry write failed")
+                layer.endEditCommand()
+                command_open = False
+            stack = layer.undoStack()
+            record = UndoRecord(
+                stack.index(), stack.command(stack.index() - 1), request.feature_id
+            )
+            self.session.accept(request, feature.id(), record)
+            self.markers.append(self._pending_markers.pop(request.request_id))
+            self.preview_controller.clear()
+            self.update_rubber_band()
+            layer.triggerRepaint()
+        except Exception as error:
+            if command_open and layer is not None:
+                with self._editing():
+                    layer.destroyEditCommand()
+            self._finish_pending(request.request_id)
+            self.report_failure("error", str(error))
+
+    def remove_last_anchor_point(self):
+        if self.tracking_is_active:
+            self._cancel_inflight_segment()
+            return
+        if not self.anchors:
+            return
+        if not self.session.undo_records:
+            self.finish_session()
+            return
+        self._cancel_inflight_segment()
+        layer = QgsProject.instance().mapLayer(self.session.target_id)
+        record = self.session.undo_records[-1]
+        if layer is None or not layer.isEditable():
+            self.finish_session()
+            return
+        stack = layer.undoStack()
+        if (
+            stack.index() != record.index
+            or stack.command(record.index - 1) is not record.command
+        ):
+            self.finish_session()
+            return
+        with self._editing():
+            stack.undo()
+        self.session.undo()
+        self.canvas().scene().removeItem(self.markers.pop())
+        self._sync_state()
+        self.update_rubber_band()
+        layer.triggerRepaint()
+
+    def keyPressEvent(self, event):
+        if self.disposed or self.suspended:
+            return
+        key = event.key()
+        if key == Qt.Key.Key_B:
+            self.remove_last_anchor_point()
+        elif key == Qt.Key.Key_Escape:
+            self._cancel_inflight_segment()
+        elif key in (Qt.Key.Key_A, Qt.Key.Key_D):
+            mode = TracingModes.LINE if key == Qt.Key.Key_A else TracingModes.DENSE_LINE
+            self.tracing_mode = TracingModes.PATH if self.tracing_mode == mode else mode
+        elif key == Qt.Key.Key_S:
+            self.turn_off_snap()
+        elif key == Qt.Key.Key_T:
+            self._handle_trace_color_shortcut()
+        self.update_rubber_band()
+
+    def _handle_trace_color_shortcut(self):
+        if self.last_mouse_event_pos is None or self.to_indexes is None:
+            return
+        try:
+            point = self.toMapCoordinates(self.last_mouse_event_pos)
+            color = self.raster_context.sample_color_at_indices(
+                *self.to_indexes(*as_xy(point))
+            )
+            if color is None:
+                return
+            if self._enable_trace_color_cb is not None:
+                self._enable_trace_color_cb()
+            if self._set_trace_color_cb is not None:
+                self._set_trace_color_cb(color)
+            else:
+                self.trace_color_changed(color)
+            self.tracing_mode = TracingModes.PATH
+        except Exception as error:
+            self.report_failure("invalid_input", str(error))
 
     def handled_shortcut_keys(self):
         return SHORTCUT_KEYS
 
-    def _handle_trace_color_shortcut(self):
-        if self.to_indexes is None:
-            QgsMessageLog.logMessage(
-                "[shortcut] Ignoring 'T' – no raster selected",
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
-            return
-
-        if self.last_mouse_event_pos is None:
-            return
-
-        qgs_point = self.toMapCoordinates(self.last_mouse_event_pos)
-        x, y = qgs_point.x(), qgs_point.y()
-
-        try:
-            i, j = self.to_indexes(x, y)
-        except Exception:
-            QgsMessageLog.logMessage(
-                "[shortcut] Ignoring 'T' – point outside raster extent",
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
-            return
-
-        color = self._sample_color_at_indices(i, j)
-        if color is None:
-            return
-
-        if self._enable_trace_color_cb is not None:
-            self._enable_trace_color_cb()
-
-        if self._set_trace_color_cb is not None:
-            self._set_trace_color_cb(color)
-        else:
-            self.trace_color_changed(color)
-
-        if not self.tracing_mode.is_tracing():
-            self.tracing_mode = TracingModes.PATH
-            self.update_rubber_band()
-
-    def _sample_color_at_indices(self, i, j):
-        return self.raster_context.sample_color_at_indices(i, j)
-
     def has_active_trace(self):
-        return bool(self.anchors) or self.tracking_is_active
+        return not self.disposed and not self.suspended and bool(self.anchors)
 
-    def _anchor_indices(self, anchor):
-        if hasattr(anchor, "i"):
-            return anchor.i, anchor.j
-        return anchor[2], anchor[3]
-
-    def trace_over_image(self, start, goal, do_it_as_task=False, vlayer=None):
-        """
-        performs tracing
-        """
-
-        preparation = self._prepare_pathfinding(start, goal, reason="trace")
-
-        grid_for_path = preparation["grid"]
-        local_start = preparation["local_start"]
-        local_goal = preparation["local_goal"]
-        origin_i, origin_j = preparation["origin"]
-
-        if do_it_as_task:
-            self._task_generation += 1
-            task_generation = self._task_generation
-            self._active_task_generation = task_generation
-
-            def callback(path, layer, generation=task_generation):
-                self._task_path_callback(
-                    path,
-                    layer,
-                    origin_i,
-                    origin_j,
-                    generation,
-                )
-
-            self.task_controller.start(
-                grid_for_path,
-                local_start,
-                local_goal,
-                callback,
-                vlayer,
-            )
-            self.tracking_is_active = True
-        else:
-            path, cost = FindPathFunction(
-                grid_for_path,
-                local_start,
-                local_goal,
-            )
-            if path is None or cost is None:
-                return None, None
-            global_path = [(i + origin_i, j + origin_j) for i, j in path]
-            return global_path, cost
-
-    def _task_path_callback(self, path, vlayer, origin_i, origin_j, generation):
-        if generation != self._active_task_generation:
+    def canvasReleaseEvent(self, event):
+        if self.disposed or self.suspended:
             return
-        if not self.tracking_is_active:
-            self._active_task_generation = None
+        if event.button() == Qt.MouseButton.RightButton:
+            self.state.click_rmb(event, self.get_current_vector_layer())
+        elif event.button() == Qt.MouseButton.LeftButton:
+            self.state.click_lmb(event, self.get_current_vector_layer())
+
+    def canvasMoveEvent(self, event):
+        if not self.disposed and not self.suspended:
+            self._hover(event.pos())
+
+    def _hover(self, screen_pos):
+        self.last_mouse_event_pos = QPoint(screen_pos)
+        if self.tracking_is_active:
             return
-        if path is None:
-            self.tracking_is_active = False
-            self.preview_controller.clear()
-            self.display_message(
-                "No Path",
-                "Unable to find a path between the selected points.",
-                level="Warning",
-                duration=2,
-            )
-            self._active_task_generation = None
-            return
-
-        self._active_task_generation = None
-        path = [(i + origin_i, j + origin_j) for i, j in path]
-        self.draw_path(path, vlayer)
-
-    def trace(self, x1, y1, i1, j1, vlayer, click_pos=None):
-        """
-        Traces path from last point to given point.
-        In case tracing is inactive just creates
-        straight line.
-        """
-
-        if self.tracing_mode.is_tracing():
-            if self.snap_tolerance is not None:
-                try:
-                    i1, j1 = self.snap(i1, j1)
-                except OutsideMapError:
-                    return
-
-            if len(self.anchors) < 2:
-                QgsMessageLog.logMessage(
-                    "[trace] Ignoring trace request – insufficient anchors",
-                    "RasterTracer",
-                    Qgis.MessageLevel.Warning,
-                )
-                return
-            _, _, i0, j0 = self.anchors[-2]
-            start_point = (int(i0), int(j0))
-            end_point = (int(i1), int(j1))
-
-            preview_path = self._take_preview_path_if_valid(
-                start_point, end_point, click_pos
-            )
-            if preview_path is not None:
-                self.tracking_is_active = True
-                self.preview_controller.clear()
-                self.draw_path(preview_path, vlayer, was_tracing=True)
-                return
-
-            if self.preview_controller.enabled and self._has_inflight_preview_for(
-                start_point, end_point
-            ):
-                commit_request = {
-                    "start": start_point,
-                    "goal": end_point,
-                }
-                self.preview_controller.request_commit(commit_request, vlayer)
-                self.tracking_is_active = True
-                self._ensure_preview_inflight_started()
-                return
-
-            self.preview_controller.clear_commit()
-            try:
-                self.clear_preview()
-                self.trace_over_image(
-                    start_point, end_point, do_it_as_task=True, vlayer=vlayer
-                )
-            except OutsideMapError:
-                pass
-        else:
-            self.preview_controller.clear_commit()
-            self.draw_path(
-                None,
-                vlayer,
-                was_tracing=False,
-                x1=x1,
-                y1=y1,
-            )
-
-    def snap_to_itself(self, x, y, sq_tolerance=1):
-        """
-        finds a nearest segment line to the current vlayer
-        """
-
-        vlayer = self.get_current_vector_layer()
-        if vlayer is None:
-            return x, y
-
-        project = QgsProject.instance()
-        project_crs = project.crs()
-        layer_crs = vlayer.crs()
-
-        pt_project = QgsPointXY(x, y)
-        to_layer = None
-        if layer_crs.isValid() and layer_crs != project_crs:
-            try:
-                to_layer = QgsCoordinateTransform(project_crs, layer_crs, project)
-            except QgsCsException:
-                QgsMessageLog.logMessage(
-                    "[snap2] Failed to build project→layer transform; using project CRS",
-                    "RasterTracer",
-                    Qgis.MessageLevel.Warning,
-                )
-                to_layer = None
-        else:
-            to_layer = None
-
-        if to_layer is not None:
-            try:
-                pt_layer = to_layer.transform(pt_project)
-            except QgsCsException:
-                QgsMessageLog.logMessage(
-                    "[snap2] Failed to transform cursor into layer CRS; falling back to project CRS",
-                    "RasterTracer",
-                    Qgis.MessageLevel.Warning,
-                )
-                pt_layer = QgsPointXY(pt_project)
-                to_layer = None
-        else:
-            pt_layer = QgsPointXY(pt_project)
-
-        from_layer = None
-        if to_layer is not None:
-            try:
-                from_layer = QgsCoordinateTransform(layer_crs, project_crs, project)
-            except QgsCsException:
-                from_layer = None
-
-        if sq_tolerance is None or sq_tolerance <= 0:
-            return x, y
-
-        tolerance = math.sqrt(sq_tolerance)
-        search_rect = QgsRectangle(
-            pt_layer.x() - tolerance,
-            pt_layer.y() - tolerance,
-            pt_layer.x() + tolerance,
-            pt_layer.y() + tolerance,
-        )
-        request = QgsFeatureRequest()
-        request.setSubsetOfAttributes([])
-        request.setFilterRect(search_rect)
-
-        closest_sq_project = None
-        closest_sq_layer = None
-        closest_fid = None
-
-        for feature in vlayer.getFeatures(request):
-            closest_point, _, _, _, sq_distance = feature.geometry().closestVertex(
-                pt_layer
-            )
-            if sq_distance < sq_tolerance:
-                if from_layer is not None:
-                    try:
-                        snapped = from_layer.transform(closest_point)
-                    except QgsCsException:
-                        QgsMessageLog.logMessage(
-                            (
-                                "[snap2] Failed to transform snapped vertex back to project CRS; "
-                                "using layer coordinates"
-                            ),
-                            "RasterTracer",
-                            Qgis.MessageLevel.Warning,
-                        )
-                        snapped = closest_point
-                else:
-                    snapped = closest_point
-                snapped_x = snapped.x()
-                snapped_y = snapped.y()
-                dx = snapped_x - x
-                dy = snapped_y - y
-                sq_distance_project = (dx * dx) + (dy * dy)
-                if sq_distance_project <= sq_tolerance:
-                    QgsMessageLog.logMessage(
-                        (
-                            "[snap2] Snapped to feature "
-                            f"{feature.id()} at distance "
-                            f"{math.sqrt(sq_distance_project):.3f} "
-                            f"(tolerance {math.sqrt(sq_tolerance):.3f})"
-                        ),
-                        "RasterTracer",
-                        Qgis.MessageLevel.Info,
-                    )
-                    return snapped_x, snapped_y
-                if (
-                    closest_sq_project is None
-                    or sq_distance_project < closest_sq_project
-                ):
-                    closest_sq_project = sq_distance_project
-                    closest_sq_layer = sq_distance
-                    closest_fid = feature.id()
-
-        if closest_sq_project is not None:
-            QgsMessageLog.logMessage(
-                (
-                    "[snap2] No vertex within tolerance; "
-                    f"closest feature {closest_fid} is "
-                    f"{math.sqrt(closest_sq_project):.3f} "
-                    f"(project units) / {math.sqrt(closest_sq_layer):.3f} "
-                    "(layer units) away"
-                ),
-                "RasterTracer",
-                Qgis.MessageLevel.Info,
-            )
-        return x, y
-
-    def snap(self, i, j):
-        if self.snap_tolerance is None:
-            return i, j
-        if not self.tracing_mode.is_tracing():
-            return i, j
-        if self.raster_context.grid_changed is None:
-            return i, j
-
-        self._ensure_window_for_indices([(i, j)], reason="snap")
-
-        if self.raster_context.grid_changed is None:
-            return i, j
-
-        local_i, local_j = self._to_local_indices(i, j)
-
-        grid = self.raster_context.grid
-        if grid is None:
-            return i, j
-        size_i, size_j = grid.shape
-        size = self.snap_tolerance
-
-        if (
-            local_i < size
-            or local_j < size
-            or local_i + size > size_i
-            or local_j + size > size_j
-        ):
-            raise OutsideMapError
-
-        grid_small = self.raster_context.grid_changed[
-            local_i - size : local_i + size,
-            local_j - size : local_j + size,
-        ]
-
-        smallest_cells = np.where(grid_small == np.amin(grid_small))
-        coordinates = list(zip(smallest_cells[0], smallest_cells[1]))
-
-        offsets = [(ci - size, cj - size) for ci, cj in coordinates]
-
-        if len(offsets) == 1:
-            offset_i, offset_j = offsets[0]
-        else:
-            lengths = [(di**2 + dj**2) for di, dj in offsets]
-            best_index = lengths.index(min(lengths))
-            offset_i, offset_j = offsets[best_index]
-
-        return i + offset_i, j + offset_j
-
-    def canvasReleaseEvent(self, mouseEvent):
-        """
-        Method where the actual tracing is performed
-        after the user clicked on the map
-        """
-
-        vlayer = self.get_current_vector_layer()
-
-        if vlayer is None:
-            return
-
-        if not vlayer.isEditable():
-            self.display_message(
-                "Edit mode",
-                "Please begin editing vector layer to trace",
-                level="Warning",
-                duration=2,
-            )
-            return
-
-        if self.rlayer is None:
-            self.display_message(
-                "Missing Layer",
-                "Please select raster layer to trace",
-                level="Warning",
-                duration=2,
-            )
-            return
-
-        if mouseEvent.button() == Qt.MouseButton.RightButton:
-            self.state.click_rmb(mouseEvent, vlayer)
-        elif mouseEvent.button() == Qt.MouseButton.LeftButton:
-            self.state.click_lmb(mouseEvent, vlayer)
-
-        return
-
-    def _build_dense_line_path(self, start_map, end_map, map_to_layer_coords):
-        """
-        Builds map and layer coordinate paths for dense line mode.
-        """
-
-        def _as_tuple(point):
-            if hasattr(point, "x"):
-                return point.x(), point.y()
-            return point[0], point[1]
-
-        x0, y0 = start_map
-        x1, y1 = end_map
-
-        layer_start = _as_tuple(map_to_layer_coords(x0, y0))
-        layer_end = _as_tuple(map_to_layer_coords(x1, y1))
-
-        dx_layer = layer_end[0] - layer_start[0]
-        dy_layer = layer_end[1] - layer_start[1]
-        layer_length = math.hypot(dx_layer, dy_layer)
-
-        if layer_length <= 0:
-            return [start_map, end_map], [layer_start, layer_end]
-
-        if layer_length < DENSE_LINE_SPACING:
-            fractions = [0.5]
-        else:
-            fractions = []
-            max_steps = int(layer_length // DENSE_LINE_SPACING)
-            for step in range(1, max_steps + 1):
-                distance = step * DENSE_LINE_SPACING
-                if distance >= layer_length:
-                    break
-                fractions.append(distance / layer_length)
-
-        map_path = [start_map]
-        path_ref = [layer_start]
-
-        for fraction in fractions:
-            map_point = (
-                x0 + (x1 - x0) * fraction,
-                y0 + (y1 - y0) * fraction,
-            )
-            layer_point = (
-                layer_start[0] + dx_layer * fraction,
-                layer_start[1] + dy_layer * fraction,
-            )
-            map_path.append(map_point)
-            path_ref.append(layer_point)
-
-        map_path.append(end_map)
-        path_ref.append(layer_end)
-
-        return map_path, path_ref
-
-    def draw_path(self, path, vlayer, was_tracing=True, x1=None, y1=None):
-        """
-        Draws a path after tracer found it.
-        """
-
-        self.preview_controller.clear()
-
-        # Guard against missing anchors when undo cleared the trace.
-        if was_tracing and len(self.anchors) < 2:
-            self.display_message(
-                "Tracing cancelled",
-                "Ignoring segment because tracing was cancelled.",
-                level="Warning",
-                duration=2,
-            )
-            self.tracking_is_active = False
-            self.current_feature_id = None
-            return
-
-        project = QgsProject.instance()
-        project_crs = project.crs()
-        vector_crs = vlayer.crs()
-        transform = None
-        if vector_crs.isValid() and project_crs != vector_crs:
-            transform = QgsCoordinateTransform(project_crs, vector_crs, project)
-
-        def _as_coords(obj):
-            if hasattr(obj, "x"):
-                return obj.x(), obj.y()
-            return obj[0], obj[1]
-
-        def _indices_to_map_coords(i_val, j_val):
-            pt = self.to_coords(i_val, j_val)
-            return _as_coords(pt)
-
-        def _map_to_layer_coords(x_val, y_val):
-            if transform is None:
-                return (x_val, y_val)
-            try:
-                transformed = transform.transform(x_val, y_val)
-            except QgsCsException:
-                transformed = QgsPointXY(x_val, y_val)
-            return _as_coords(transformed)
-
-        if was_tracing:
-            if self.smooth_line:
-                path = smooth(path, size=5)
-                path = simplify(path)
-            x0, y0, _, _ = self.anchors[-2]
-            map_path = [_indices_to_map_coords(i_val, j_val) for i_val, j_val in path]
-            if not map_path:
-                self.tracking_is_active = False
-                self.current_feature_id = None
-                return
-            if map_path:
-                map_path[0] = (x0, y0)
-            path_ref = [
-                _map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path
-            ]
-            current_last_point = QgsPointXY(*map_path[-1])
-        else:
-            x0, y0, _i, _j = self.anchors[-2]
-            current_last_point = (x1, y1)
-            if self.tracing_mode == TracingModes.DENSE_LINE:
-                map_path, path_ref = self._build_dense_line_path(
-                    (x0, y0),
-                    (x1, y1),
-                    _map_to_layer_coords,
-                )
-            else:
-                map_path = [(x0, y0), (x1, y1)]
-                path_ref = [
-                    _map_to_layer_coords(x_coord, y_coord)
-                    for x_coord, y_coord in map_path
-                ]
-
-        self.ready = False
-        if len(self.anchors) == 2:
-            vlayer.beginEditCommand("Adding new line")
-            self.current_feature_id = add_feature_to_vlayer(vlayer, path_ref)
-            vlayer.endEditCommand()
-        else:
-            vlayer.beginEditCommand("Adding new segment to the line")
-            self.current_feature_id = add_to_last_feature(
-                vlayer,
-                path_ref,
-                fid=self.current_feature_id,
-            )
-            vlayer.endEditCommand()
-        _, _, current_last_point_i, current_last_point_j = self.anchors[-1]
-        last_x = (
-            current_last_point.x()
-            if hasattr(current_last_point, "x")
-            else current_last_point[0]
-        )
-        last_y = (
-            current_last_point.y()
-            if hasattr(current_last_point, "y")
-            else current_last_point[1]
-        )
-        self.anchors[-1] = Anchor(
-            last_x,
-            last_y,
-            current_last_point_i,
-            current_last_point_j,
-        )
-        self.redraw()
-        self.tracking_is_active = False
-        self._has_optimistic_anchor = False
-
-    def update_rubber_band(self):
-        # this is very ugly but I can't make another way
-        if self.last_mouse_event_pos is None:
-            return
-
         if not self.anchors:
+            self.marker_snap.hide()
             return
-
-        x0, y0, _, _ = self.anchors[-1]
-        qgsPoint = self.toMapCoordinates(self.last_mouse_event_pos)
-        x1, y1 = qgsPoint.x(), qgsPoint.y()
-        points = [QgsPoint(x0, y0), QgsPoint(x1, y1)]
-
-        color = RUBBERBAND_COLORS.get(
-            self.tracing_mode,
-            RUBBERBAND_COLORS.get(TracingModes.LINE),
-        )
-        self.rubber_band.setColor(color)
-        self.rubber_band.setWidth(3)
-
-        line_style = RUBBERBAND_LINE_STYLES.get(
-            self.tracing_mode,
-            Qt.PenStyle.SolidLine,
-        )
-        self.rubber_band.setLineStyle(line_style)
-
-        vlayer = self.get_current_vector_layer()
-        if vlayer is None:
-            return
-
-        self.rubber_band.setToGeometry(
-            QgsGeometry.fromPolyline(points),
-            self.vlayer,
-        )
-
-    def canvasMoveEvent(self, mouseEvent):
-        """
-        Store the mouse position for the correct
-        updating of the rubber band
-        """
-
-        # we need at least one point to draw
-        if not self.anchors:
-            self.clear_preview()
-            return
-
-        qgs_point = self.toMapCoordinates(mouseEvent.pos())
-        x1, y1 = qgs_point.x(), qgs_point.y()
-
-        preview_goal = None
-
-        if self.tracing_mode.is_tracing() and self.to_indexes is not None:
-            try:
-                base_i, base_j = self.to_indexes(x1, y1)
-            except Exception:
-                base_i = None
-                base_j = None
-
-            if base_i is not None and base_j is not None:
-                target_i, target_j = base_i, base_j
-                marker_x, marker_y = x1, y1
-                if self.snap_tolerance is not None:
-                    try:
-                        target_i, target_j = self.snap(base_i, base_j)
-                    except OutsideMapError:
-                        self.marker_snap.hide()
-                        self.clear_preview()
-                        return
-                    snap_point = self.to_coords(target_i, target_j)
-                    marker_x, marker_y = (
-                        (snap_point.x(), snap_point.y())
-                        if hasattr(snap_point, "x")
-                        else (snap_point[0], snap_point[1])
-                    )
-                if self.snap2_tolerance is not None:
-                    snapped_x, snapped_y = self.snap_to_itself(
-                        marker_x, marker_y, self.snap2_tolerance
-                    )
-                    marker_x, marker_y = snapped_x, snapped_y
-                    try:
-                        target_i, target_j = self.to_indexes(marker_x, marker_y)
-                    except Exception:
-                        self.marker_snap.hide()
-                        self.clear_preview()
-                        return
-                if self.snap_tolerance is not None or self.snap2_tolerance is not None:
-                    self.marker_snap.setCenter(QgsPointXY(marker_x, marker_y))
-                    self.marker_snap.show()
-                else:
-                    self.marker_snap.hide()
-                preview_goal = (target_i, target_j)
+        try:
+            endpoint = self.resolve_endpoint(self.toMapCoordinates(screen_pos))
+            if self.snap_tolerance is not None or self.snap2_tolerance is not None:
+                self.marker_snap.setCenter(QgsPointXY(*endpoint.xy))
+                self.marker_snap.show()
             else:
                 self.marker_snap.hide()
-        else:
-            self.clear_preview()
+            self.update_rubber_band(endpoint)
+            if self.tracing_mode.is_tracing():
+                self.preview_controller.queue(self.make_request(endpoint, screen_pos))
+        except Exception:
             self.marker_snap.hide()
+            self.preview_controller.clear()
 
-        self.last_mouse_event_pos = mouseEvent.pos()
-        self.update_rubber_band()
-        self.redraw()
-
+    def update_rubber_band(self, endpoint=None):
         if (
-            self.preview_controller.enabled
-            and self.tracing_mode.is_tracing()
-            and preview_goal is not None
-            and len(self.anchors) >= 1
+            self.disposed
+            or self.suspended
+            or not self.anchors
+            or self.last_mouse_event_pos is None
         ):
-            start_anchor = self.anchors[-1]
-            start = self._anchor_indices(start_anchor)
-            self._queue_preview(start, preview_goal, mouseEvent.pos())
-        elif self.preview_controller.enabled:
-            self.clear_preview()
-
-    def abort_tracing_process(self):
-        """
-        Terminate background process of tracing raster
-        after the user hits Esc.
-        """
-
-        self.clear_preview()
-
-        # check if we have any tasks
-        if not self.task_controller.active:
-            self._has_optimistic_anchor = False
+            self.rubber_band.hide()
             return
-
-        self.tracking_is_active = False
-
-        if self.task_controller.cancel():
-            self.remove_last_anchor_point(
-                undo_edit=False,
-            )
-        self._has_optimistic_anchor = False
-        self.current_feature_id = None
-
-    def redraw(self):
-        # If caching is enabled, a simple canvas refresh might not be
-        # sufficient to trigger a redraw and you must clear the cached image
-        # for the layer
-        if self.iface.mapCanvas().isCachingEnabled():
-            vlayer = self.get_current_vector_layer()
-            if vlayer is None:
-                return
-            vlayer.triggerRepaint()
-
-        self.iface.mapCanvas().refresh()
-        QgsApplication.processEvents()
-
-    def pan(self, x, y):
-        """
-        Move the canvas to the x, y position
-        """
-        currExt = self.iface.mapCanvas().extent()
-        canvasCenter = currExt.center()
-        dx = x - canvasCenter.x()
-        dy = y - canvasCenter.y()
-        xMin = currExt.xMinimum() + dx
-        xMax = currExt.xMaximum() + dx
-        yMin = currExt.yMinimum() + dy
-        yMax = currExt.yMaximum() + dy
-        newRect = QgsRectangle(xMin, yMin, xMax, yMax)
-        self.iface.mapCanvas().setExtent(newRect)
-
-    def add_last_feature_to_spindex(self, vlayer):
-        """
-        Adds last feature to spatial index
-        """
-        features = list(vlayer.getFeatures())
-        last_feature = features[-1]
-        self.spIndex.insertFeature(last_feature)
-
-    def create_spatial_index_for_vlayer(self, vlayer):
-        """
-        Creates spatial index for the vlayer
-        """
-
-        self.spIndex = QgsSpatialIndex()
-        # features = [f for f in vlayer]
-        self.spIndex.addFeatures(vlayer.getFeatures())
-
-
-def add_to_last_feature(vlayer, points, fid):
-    """
-    Adds points to the target line feature in the vlayer identified by fid.
-    vlayer - QgsLayer of type MultiLine string
-    points - list of points
-    fid - id of the feature to update
-    """
-
-    def _as_qgs_point_xy(point):
-        if hasattr(point, "x") and hasattr(point, "y"):
-            return QgsPointXY(point.x(), point.y())
-        x, y = point
-        return QgsPointXY(x, y)
-
-    feature = vlayer.getFeature(fid)
-    if not feature.isValid():
-        layer_name = vlayer.name() if hasattr(vlayer, "name") else "<unknown layer>"
-        QgsMessageLog.logMessage(
-            f"[feature] Unable to extend feature id {fid} on layer '{layer_name}'; geometry unchanged",
-            "RasterTracer",
-            Qgis.MessageLevel.Critical,
+        end = (
+            endpoint.xy
+            if endpoint is not None
+            else as_xy(self.toMapCoordinates(self.last_mouse_event_pos))
         )
-        return None
+        self.rubber_band.setColor(
+            QColor(0, 102, 255)
+            if self.tracing_mode == TracingModes.DENSE_LINE
+            else QColor(255, 0, 0)
+        )
+        self.rubber_band.setWidth(3)
+        self.rubber_band.setLineStyle(
+            Qt.PenStyle.DotLine
+            if self.tracing_mode.is_tracing()
+            else Qt.PenStyle.SolidLine
+        )
+        self.rubber_band.setToGeometry(
+            QgsGeometry.fromPolylineXY(
+                [QgsPointXY(*self.anchors[-1].xy), QgsPointXY(*end)]
+            ),
+            None,
+        )
+        self.rubber_band.show()
 
-    geom = feature.geometry()
-    new_points = [_as_qgs_point_xy(point) for point in points]
+    def trace_over_image(self, start, goal):
+        """Synchronous numerical probe; ordinary input always uses the scheduler."""
+        from .pointtool_session import WorkerRequest
 
-    if geom.isMultipart():
-        multiline = geom.asMultiPolyline()
-        if not multiline:
-            multiline = [[]]
-        multiline[-1].extend(new_points)
-        new_geom = QgsGeometry.fromMultiPolylineXY(multiline)
-    else:
-        polyline = geom.asPolyline()
-        if polyline is None:
-            polyline = []
-        polyline.extend(new_points)
-        new_geom = QgsGeometry.fromPolylineXY(polyline)
+        sampler = self.raster_context.raster_sampler
+        bounds = self.raster_context.compute_window_bounds([start, goal])
+        work = WorkerRequest(
+            new_id(),
+            sampler.source,
+            bounds,
+            start,
+            goal,
+            self.trace_color_value,
+            self.smooth_line,
+        )
+        result = execute_request(work)
+        if result.status != "success":
+            return None, None
+        return [
+            (i + result.origin[0], j + result.origin[1]) for i, j in result.path
+        ], result.cost
 
-    vlayer.changeGeometry(fid, new_geom)
-    return fid
+    def tr(self, message):
+        return QCoreApplication.translate("PointTool", message)
 
-
-def add_feature_to_vlayer(vlayer, points):
-    """
-    Adds new line feature to the vlayer and returns the assigned feature id.
-    """
-
-    feat = QgsFeature(vlayer.fields())
-    polyline = [QgsPoint(x, y) for x, y in points]
-    feat.setGeometry(QgsGeometry.fromPolyline(polyline))
-    if not vlayer.addFeature(feat):
-        return None
-    return feat.id()
+    def report_failure(self, status, detail=""):
+        if self.disposed or status == "cancelled":
+            return
+        if status == "resource_limit":
+            message = self.tr("Tracing limit reached. Please choose a shorter segment.")
+        elif status == "no_path":
+            message = self.tr("Unable to find a path between the selected points.")
+        elif status == "invalid_input":
+            message = self.tr(
+                "Cannot trace this endpoint. Check the editable vector layer and valid RGB raster pixels."
+            )
+        else:
+            message = self.tr(
+                "Unable to finish the segment. Previous geometry has been preserved."
+            )
+        self.iface.messageBar().pushMessage(
+            self.tr("RasterTracer"), message, Qgis.MessageLevel.Warning, 3
+        )
+        if detail:
+            QgsMessageLog.logMessage(detail, "RasterTracer", Qgis.MessageLevel.Warning)

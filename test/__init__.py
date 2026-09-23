@@ -1,1 +1,1 @@
-import qgis  # noqa: F401 - Initializes QGIS bindings before test imports.
+"""Tests bootstrap QGIS only from integration modules."""
