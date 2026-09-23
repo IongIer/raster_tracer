@@ -85,7 +85,7 @@ class State:
             QgsMessageLog.logMessage(
                 "[state] Resetting to first point after anchor loss",
                 "RasterTracer",
-                Qgis.Warning,
+                Qgis.MessageLevel.Warning,
             )
             self.pointtool.current_feature_id = None
             self.pointtool.change_state(WaitingFirstPointState)
@@ -211,7 +211,7 @@ class AutoFollowingLineState(State):
             QgsMessageLog.logMessage(
                 "[autofollow] Unable to find continuation path",
                 "RasterTracer",
-                Qgis.Warning,
+                Qgis.MessageLevel.Warning,
             )
             return
 

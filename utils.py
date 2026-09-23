@@ -118,9 +118,9 @@ class RasterSampler:
             raise PossiblyIndexedImageError
 
         bands = (
-            np.array(band1, dtype=dtype, copy=False),
-            np.array(band2, dtype=dtype, copy=False),
-            np.array(band3, dtype=dtype, copy=False),
+            np.asarray(band1, dtype=dtype),
+            np.asarray(band2, dtype=dtype),
+            np.asarray(band3, dtype=dtype),
         )
 
         if PROFILE_ENABLED:
@@ -134,7 +134,7 @@ class RasterSampler:
                     f"bytes={(total_bytes / (1024 ** 2)):.1f}"
                 ),
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
 
         return bands, (i_min_clamped, j_min_clamped), (height, width)
@@ -155,6 +155,6 @@ def get_whole_raster(layer, project_instance):
                 f"({sampler.height},{sampler.width})"
             ),
             "RasterTracer",
-            Qgis.Info,
+            Qgis.MessageLevel.Info,
         )
     return sampler

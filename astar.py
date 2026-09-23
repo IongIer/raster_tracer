@@ -83,14 +83,14 @@ def _log_profile_stats(label, stats):
     QgsMessageLog.logMessage(
         f"[profiling] {label} duration={stats['duration']:.3f}s nodes={stats['nodes']}",
         "RasterTracer",
-        Qgis.Info,
+        Qgis.MessageLevel.Info,
     )
     profile_text = stats.get("profile")
     if profile_text:
         QgsMessageLog.logMessage(
             profile_text,
             "RasterTracer",
-            Qgis.Info,
+            Qgis.MessageLevel.Info,
         )
 
 
@@ -174,7 +174,7 @@ class FindPathTask(QgsTask):
 
         super().__init__(
             'Task for finding path on 2D grid for raster_tracer',
-            QgsTask.CanCancel
+            QgsTask.Flag.CanCancel
                 )
         self.graph = graph
         self.start = start

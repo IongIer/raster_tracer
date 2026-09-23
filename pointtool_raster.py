@@ -225,7 +225,7 @@ class RasterTracingContext:
                     f"grid_mb={(grid_bytes / (1024 ** 2)):.1f}"
                 ),
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
 
         self.recompute_trace_grid(reason=f"window:{reason}")
@@ -306,7 +306,7 @@ class RasterTracingContext:
                     f"total={total_text} grid_changed_mb={ (grid_changed_bytes / (1024 ** 2)):.1f}"
                 ),
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
 
     def prepare_pathfinding(self, start, goal, reason):
@@ -361,7 +361,7 @@ class RasterTracingContext:
             QgsMessageLog.logMessage(
                 "[shortcut] Sampling failed – raster data unavailable",
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
             return None
 
@@ -371,7 +371,7 @@ class RasterTracingContext:
             QgsMessageLog.logMessage(
                 "[shortcut] Sampling failed – indices outside window",
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
             return None
 
@@ -384,7 +384,7 @@ class RasterTracingContext:
             QgsMessageLog.logMessage(
                 "[shortcut] Sampling failed – invalid pixel data",
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
             return None
 

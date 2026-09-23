@@ -8,7 +8,7 @@ class AutotraceSubTask(QgsTask):
     def __init__(self, pointtool, vlayer, clicked_point=None):
         super().__init__(
             'Task for switching mode to autotrace',
-            QgsTask.CanCancel
+            QgsTask.Flag.CanCancel
                 )
         self.pointtool = pointtool
         self.vlayer = vlayer
@@ -71,7 +71,7 @@ class AutotraceSubTask(QgsTask):
             QgsMessageLog.logMessage(
                 "[autotrace] Unable to determine continuation path",
                 "RasterTracer",
-                Qgis.Warning,
+                Qgis.MessageLevel.Warning,
             )
             return []
 

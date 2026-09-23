@@ -25,7 +25,7 @@ from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt, QObje
 from qgis.PyQt.QtGui import QIcon, QColor
 from qgis.PyQt.QtWidgets import QAction, QApplication
 # Initialize Qt resources from file resources.py
-from .resources import *
+from . import resources  # pylint: disable=unused-import
 
 
 # Import the code for the DockWidget
@@ -50,8 +50,8 @@ class LayerTreeShortcutFilter(QObject):
         pointtool = self.pointtool
         if (
             pointtool is not None and
-            event.type() == QEvent.KeyPress and
-            event.modifiers() == Qt.NoModifier and
+            event.type() == QEvent.Type.KeyPress and
+            event.modifiers() == Qt.KeyboardModifier.NoModifier and
             pointtool.has_active_trace() and
             event.key() in pointtool.handled_shortcut_keys()
         ):
@@ -79,7 +79,7 @@ class RasterTracer:
         self.plugin_dir = os.path.dirname(__file__)
 
         # initialize locale
-        locale = QSettings().value('locale/userLocale')[0:2]
+        locale = QSettings().value('locale/userLocale', 'en', type=str)[0:2]
         locale_path = os.path.join(
             self.plugin_dir,
             'i18n',
@@ -281,7 +281,8 @@ class RasterTracer:
         self.dockwidget.closingPlugin.connect(self.onClosePlugin)
 
         # show the dockwidget
-        self.iface.addDockWidget(Qt.LeftDockWidgetArea, self.dockwidget)
+        self.iface.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea, self.dockwidget)
         self.dockwidget.show()
 
         self.map_canvas = self.iface.mapCanvas()
@@ -474,7 +475,8 @@ class RasterTracer:
             color = QColor(color)
         self.tool_identify.set_preview_color(color)
         settings = QSettings()
-        settings.setValue('RasterTracer/preview/color', color.name(QColor.HexArgb))
+        settings.setValue(
+            'RasterTracer/preview/color', color.name(QColor.NameFormat.HexArgb))
 
     def preview_width_changed(self, value):
         try:
@@ -537,7 +539,9 @@ class RasterTracer:
         settings = QSettings()
         settings.setValue('RasterTracer/color/enabled', enabled)
         if color.isValid():
-            settings.setValue('RasterTracer/color/value', color.name(QColor.HexArgb))
+            settings.setValue(
+                'RasterTracer/color/value',
+                color.name(QColor.NameFormat.HexArgb))
 
         if enabled:
             self.tool_identify.trace_color_changed(color)

@@ -11,10 +11,10 @@ import math
 import numpy as np
 
 from qgis.core import QgsPointXY, QgsPoint, QgsGeometry, QgsFeature, \
-                      QgsVectorLayer, QgsProject, QgsWkbTypes, QgsApplication, \
+                      QgsVectorLayer, QgsProject, QgsApplication, \
                       QgsRectangle, QgsSpatialIndex, QgsMessageLog, QgsCsException, \
                       QgsFeatureRequest
-from qgis.gui import QgsMapToolEmitPoint, QgsMapToolEdit, \
+from qgis.gui import QgsMapToolEdit, \
                      QgsRubberBand, QgsVertexMarker, QgsMapTool
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
@@ -40,12 +40,12 @@ ALLOW_AUTO_FOLLOWING = False
 DENSE_LINE_SPACING = 5.0
 
 SHORTCUT_KEYS = {
-    Qt.Key_A,
-    Qt.Key_B,
-    Qt.Key_S,
-    Qt.Key_Escape,
-    Qt.Key_T,
-    Qt.Key_D,
+    Qt.Key.Key_A,
+    Qt.Key.Key_B,
+    Qt.Key.Key_S,
+    Qt.Key.Key_Escape,
+    Qt.Key.Key_T,
+    Qt.Key.Key_D,
 }
 
 PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
@@ -95,10 +95,10 @@ class TracingModes(Enum):
 
 # Line styles for the rubber band
 RUBBERBAND_LINE_STYLES = {
-    TracingModes.PATH: Qt.DotLine,
-    TracingModes.LINE: Qt.SolidLine,
-    TracingModes.AUTO: Qt.DashDotLine,
-    TracingModes.DENSE_LINE: Qt.SolidLine,
+    TracingModes.PATH: Qt.PenStyle.DotLine,
+    TracingModes.LINE: Qt.PenStyle.SolidLine,
+    TracingModes.AUTO: Qt.PenStyle.DashDotLine,
+    TracingModes.DENSE_LINE: Qt.PenStyle.SolidLine,
     }
 
 RUBBERBAND_COLORS = {
@@ -157,8 +157,8 @@ class PointTool(QgsMapToolEdit):
         self.grid_conversion = "gray_diff"
 
         # QApplication.restoreOverrideCursor()
-        # QApplication.setOverrideCursor(Qt.CrossCursor)
-        QgsMapToolEmitPoint.__init__(self, canvas)
+        # QApplication.setOverrideCursor(Qt.CursorShape.CrossCursor)
+        super().__init__(canvas)
 
         self.rlayer = None
         self.snap_tolerance = None # snap to color
@@ -180,7 +180,7 @@ class PointTool(QgsMapToolEdit):
         self._active_task_generation = None
 
         # False = not a polygon
-        self.rubber_band = QgsRubberBand(self.canvas(), QgsWkbTypes.LineGeometry)
+        self.rubber_band = QgsRubberBand(self.canvas(), Qgis.GeometryType.Line)
         self.markers = []
         self.marker_snap = QgsVertexMarker(self.canvas())
         self.marker_snap.setColor(QColor(255, 0, 255))
@@ -202,10 +202,10 @@ class PointTool(QgsMapToolEdit):
         '''
 
         LEVELS = {
-            'Info': Qgis.Info,
-            'Warning': Qgis.Warning,
-            'Critical': Qgis.Critical,
-            'Success': Qgis.Success,
+            'Info': Qgis.MessageLevel.Info,
+            'Warning': Qgis.MessageLevel.Warning,
+            'Critical': Qgis.MessageLevel.Critical,
+            'Success': Qgis.MessageLevel.Success,
         }
 
         self.iface.messageBar().pushMessage(
@@ -329,7 +329,7 @@ class PointTool(QgsMapToolEdit):
         try:
             vlayer = self.iface.layerTreeView().selectedLayers()[0]
             if isinstance(vlayer, QgsVectorLayer):
-                if vlayer.wkbType() == QgsWkbTypes.MultiLineString:
+                if vlayer.wkbType() == Qgis.WkbType.MultiLineString:
                     # if self.last_vlayer:
                     #     if vlayer != self.last_vlayer:
                     #         self.create_spatial_index_for_vlayer(vlayer)
@@ -397,7 +397,7 @@ class PointTool(QgsMapToolEdit):
                     f"size={raster_size} total={total_text}"
                 ),
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
 
     def remove_last_anchor_point(self, undo_edit=True, redraw=True):
@@ -438,11 +438,11 @@ class PointTool(QgsMapToolEdit):
         self._has_optimistic_anchor = False
 
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key_B:
+        if e.key() == Qt.Key.Key_B:
             # delete last segment if backspace is pressed
             self._cancel_inflight_segment()
             self.remove_last_anchor_point()
-        elif e.key() == Qt.Key_A:
+        elif e.key() == Qt.Key.Key_A:
             # toggle between path following and straight line modes
             if self.tracing_mode != TracingModes.LINE:
                 self.tracing_mode = TracingModes.LINE
@@ -451,7 +451,7 @@ class PointTool(QgsMapToolEdit):
             self.update_rubber_band()
             if not self.tracing_mode.is_tracing():
                 self.clear_preview()
-        elif e.key() == Qt.Key_D:
+        elif e.key() == Qt.Key.Key_D:
             # toggle dense straight line mode
             if self.tracing_mode != TracingModes.DENSE_LINE:
                 self.tracing_mode = TracingModes.DENSE_LINE
@@ -460,14 +460,14 @@ class PointTool(QgsMapToolEdit):
             self.update_rubber_band()
             if not self.tracing_mode.is_tracing():
                 self.clear_preview()
-        elif e.key() == Qt.Key_S:
+        elif e.key() == Qt.Key.Key_S:
             # toggle snap mode
             self.turn_off_snap()
             self.clear_preview()
-        elif e.key() == Qt.Key_Escape:
+        elif e.key() == Qt.Key.Key_Escape:
             # Abort tracing process
             self.abort_tracing_process()
-        elif e.key() == Qt.Key_T:
+        elif e.key() == Qt.Key.Key_T:
             self._handle_trace_color_shortcut()
 
     def add_anchor_points(self, x1, y1, i1, j1):
@@ -491,7 +491,7 @@ class PointTool(QgsMapToolEdit):
             QgsMessageLog.logMessage(
                 "[shortcut] Ignoring 'T' – no raster selected",
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
             return
 
@@ -507,7 +507,7 @@ class PointTool(QgsMapToolEdit):
             QgsMessageLog.logMessage(
                 "[shortcut] Ignoring 'T' – point outside raster extent",
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
             return
 
@@ -629,7 +629,7 @@ class PointTool(QgsMapToolEdit):
                 QgsMessageLog.logMessage(
                     "[trace] Ignoring trace request – insufficient anchors",
                     "RasterTracer",
-                    Qgis.Warning,
+                    Qgis.MessageLevel.Warning,
                 )
                 return
             _, _, i0, j0 = self.anchors[-2]
@@ -697,7 +697,7 @@ class PointTool(QgsMapToolEdit):
                 QgsMessageLog.logMessage(
                     "[snap2] Failed to build project→layer transform; using project CRS",
                     "RasterTracer",
-                    Qgis.Warning,
+                    Qgis.MessageLevel.Warning,
                 )
                 to_layer = None
         else:
@@ -710,7 +710,7 @@ class PointTool(QgsMapToolEdit):
                 QgsMessageLog.logMessage(
                     "[snap2] Failed to transform cursor into layer CRS; falling back to project CRS",
                     "RasterTracer",
-                    Qgis.Warning,
+                    Qgis.MessageLevel.Warning,
                 )
                 pt_layer = QgsPointXY(pt_project)
                 to_layer = None
@@ -755,7 +755,7 @@ class PointTool(QgsMapToolEdit):
                                 "using layer coordinates"
                             ),
                             "RasterTracer",
-                            Qgis.Warning,
+                            Qgis.MessageLevel.Warning,
                         )
                         snapped = closest_point
                 else:
@@ -774,7 +774,7 @@ class PointTool(QgsMapToolEdit):
                             f"(tolerance {math.sqrt(sq_tolerance):.3f})"
                         ),
                         "RasterTracer",
-                        Qgis.Info,
+                        Qgis.MessageLevel.Info,
                     )
                     return snapped_x, snapped_y
                 if (
@@ -795,7 +795,7 @@ class PointTool(QgsMapToolEdit):
                     "(layer units) away"
                 ),
                 "RasterTracer",
-                Qgis.Info,
+                Qgis.MessageLevel.Info,
             )
         return x, y
 
@@ -876,9 +876,9 @@ class PointTool(QgsMapToolEdit):
                 )
             return
 
-        if mouseEvent.button() == Qt.RightButton:
+        if mouseEvent.button() == Qt.MouseButton.RightButton:
             self.state.click_rmb(mouseEvent, vlayer)
-        elif mouseEvent.button() == Qt.LeftButton:
+        elif mouseEvent.button() == Qt.MouseButton.LeftButton:
             self.state.click_lmb(mouseEvent, vlayer)
 
         return
@@ -1058,7 +1058,7 @@ class PointTool(QgsMapToolEdit):
 
         line_style = RUBBERBAND_LINE_STYLES.get(
             self.tracing_mode,
-            Qt.SolidLine,
+            Qt.PenStyle.SolidLine,
         )
         self.rubber_band.setLineStyle(line_style)
 
@@ -1229,7 +1229,7 @@ def add_to_last_feature(vlayer, points, fid):
         QgsMessageLog.logMessage(
             f"[feature] Unable to extend feature id {fid} on layer '{layer_name}'; geometry unchanged",
             "RasterTracer",
-            Qgis.Critical,
+            Qgis.MessageLevel.Critical,
         )
         return None
 

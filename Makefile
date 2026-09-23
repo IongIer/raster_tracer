@@ -44,7 +44,14 @@ PLUGINNAME = raster_tracer
 
 PY_FILES = \
 	__init__.py \
-	raster_tracer.py raster_tracer_dockwidget.py
+	raster_tracer.py raster_tracer_dockwidget.py \
+	astar.py autotrace.py exceptions.py line_simplification.py \
+	pointtool.py pointtool_preview.py pointtool_raster.py \
+	pointtool_states.py pointtool_tasks.py utils.py
+
+PYTHON ?= python3
+PYRCC ?= pyrcc5
+PEP8 ?= pycodestyle
 
 UI_FILES = raster_tracer_dockwidget_base.ui
 
@@ -88,29 +95,15 @@ default:
 
 compile: $(COMPILED_RESOURCE_FILES)
 
-%.py : %.qrc $(RESOURCES_SRC)
-	pyrcc5 -o $*.py  $<
+%.py : %.qrc $(RESOURCE_SRC)
+	$(PYRCC) -o $*.py $<
+	$(PYTHON) scripts/fix-resource-imports.py $*.py
 
 %.qm : %.ts
 	$(LRELEASE) $<
 
-test: compile transcompile
-	@echo
-	@echo "----------------------"
-	@echo "Regression Test Suite"
-	@echo "----------------------"
-
-	@# Preceding dash means that make will continue in case of errors
-	@-export PYTHONPATH=`pwd`:$(PYTHONPATH); \
-		export QGIS_DEBUG=0; \
-		export QGIS_LOG_FILE=/dev/null; \
-		nosetests -v --with-id --with-coverage --cover-package=. \
-		3>&1 1>&2 2>&3 3>&- || true
-	@echo "----------------------"
-	@echo "If you get a 'no module named qgis.core error, try sourcing"
-	@echo "the helper script we have provided first then run make test."
-	@echo "e.g. source run-env-linux.sh <path to qgis install>; make test"
-	@echo "----------------------"
+test:
+	$(PYTHON) scripts/run-tests.py
 
 deploy: compile doc transcompile
 	@echo
@@ -160,18 +153,7 @@ zip: deploy dclean
 	cd $(HOME)/$(QGISDIR)/python/plugins; zip -9r $(CURDIR)/$(PLUGINNAME).zip $(PLUGINNAME)
 
 package: compile
-	# Create a zip package of the plugin named $(PLUGINNAME).zip.
-	# This requires use of git (your plugin development directory must be a
-	# git repository).
-	# To use, pass a valid commit or tag as follows:
-	#   make package VERSION=Version_0.3.2
-	@echo
-	@echo "------------------------------------"
-	@echo "Exporting plugin to zip package.	"
-	@echo "------------------------------------"
-	rm -f $(PLUGINNAME).zip
-	git archive --prefix=$(PLUGINNAME)/ -o $(PLUGINNAME).zip $(VERSION)
-	echo "Created package: $(PLUGINNAME).zip"
+	$(PYTHON) scripts/package-plugin.py
 
 upload: zip
 	@echo
@@ -238,7 +220,7 @@ pep8:
 	@echo "-----------"
 	@echo "PEP8 issues"
 	@echo "-----------"
-	@pep8 --repeat --ignore=E203,E121,E122,E123,E124,E125,E126,E127,E128 --exclude $(PEP8EXCLUDE) . || true
+	@$(PEP8) --repeat --ignore=E203,E121,E122,E123,E124,E125,E126,E127,E128 --exclude $(PEP8EXCLUDE) . || true
 	@echo "-----------"
 	@echo "Ignored in PEP8 check:"
 	@echo $(PEP8EXCLUDE)

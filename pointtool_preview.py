@@ -4,7 +4,7 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 
 from qgis.PyQt.QtCore import Qt, QTimer
 from qgis.PyQt.QtGui import QColor
-from qgis.core import QgsApplication, QgsGeometry, QgsPointXY, QgsWkbTypes
+from qgis.core import Qgis, QgsApplication, QgsGeometry, QgsPointXY
 from qgis.gui import QgsRubberBand
 
 from .astar import FindPathTask
@@ -32,12 +32,12 @@ class TracePreviewController:
         self._task: Optional[FindPathTask] = None
         self._sequence = 0
 
-        self._rubber_band = QgsRubberBand(tool.canvas(), QgsWkbTypes.LineGeometry)
+        self._rubber_band = QgsRubberBand(tool.canvas(), Qgis.GeometryType.Line)
         self._color = QColor(255, 20, 147)
         self._width = 2.7
         self._rubber_band.setColor(self._color)
         self._rubber_band.setWidth(self._width)
-        self._rubber_band.setLineStyle(Qt.DashLine)
+        self._rubber_band.setLineStyle(Qt.PenStyle.DashLine)
         self._rubber_band.hide()
 
         self._cached_path: Optional[Iterable[Tuple[int, int]]] = None

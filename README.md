@@ -17,6 +17,40 @@ The process is show here:
 
 <img src="screen.gif" width="640" />
 
+## Compatibility and development
+
+The same plugin package supports QGIS 3.40+ and QGIS 4 (Qt5 and Qt6).
+Qt imports use `qgis.PyQt`, so QGIS selects its own Qt binding.
+
+Run `make package` to build `dist/raster_tracer-0.3.4.zip` from the working
+tree. Install that ZIP through QGIS's plugin manager.
+
+The compatibility workflow tests the packaged plugin in isolated QGIS 3.40,
+3.44 and 4.0 containers. No QGIS installation on the host is required.
+See [test/README.md](test/README.md) for local commands and desktop validation.
+
+Checks run after each push to `master`, or manually from the repository's
+Actions tab. A newer run on the same branch cancels any older unfinished run.
+PRs and releases are not required. Results appear in Actions and on the pushed
+commit; a failed check does not undo the push. The workflow builds and tests
+the ZIP but does not publish it. For a fork, enable workflows in the Actions
+tab if GitHub has them disabled.
+
+## Profiling
+
+Set `RASTER_TRACER_PROFILE=1` before starting QGIS to log raster sampling
+timings and pathfinding profiles. On Linux, with QGIS installed:
+
+```sh
+RASTER_TRACER_PROFILE=1 qgis
+```
+
+Trace a representative RGB raster, then inspect the `RasterTracer` tab in
+QGIS's Log Messages panel. Entries include sampler setup, raster window
+read timings and memory use, and pathfinding duration, explored node count
+and cProfile output. Profiling adds overhead; restart QGIS with the variable
+unset or set to `0` for normal use.
+
 ## Usage
 
 Tracing is enabled only if the selected vector layer is in the editing mode.

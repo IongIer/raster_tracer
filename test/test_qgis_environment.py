@@ -53,8 +53,11 @@ class QGISTest(unittest.TestCase):
         path = os.path.join(os.path.dirname(__file__), 'tenbytenraster.asc')
         title = 'TestRaster'
         layer = QgsRasterLayer(path, title)
+        self.assertTrue(layer.isValid())
         auth_id = layer.crs().authid()
-        self.assertEqual(auth_id, expected_auth_id)
+        # The old ESRI WKT fixture has no axis declarations. GDAL/PROJ
+        # versions identify it as either WGS84 latitude/longitude or CRS84.
+        self.assertIn(auth_id, ('EPSG:4326', 'OGC:CRS84'))
 
 if __name__ == '__main__':
     unittest.main()

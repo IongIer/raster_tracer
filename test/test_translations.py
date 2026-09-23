@@ -24,25 +24,18 @@ QGIS_APP = get_qgis_app()
 class SafeTranslationsTest(unittest.TestCase):
     """Test translations work."""
 
-    def setUp(self):
-        """Runs before each test."""
-        if 'LANG' in iter(os.environ.keys()):
-            os.environ.__delitem__('LANG')
-
-    def tearDown(self):
-        """Runs after each test."""
-        if 'LANG' in iter(os.environ.keys()):
-            os.environ.__delitem__('LANG')
-
     def test_qgis_translations(self):
         """Test that translations work."""
         parent_path = os.path.join(__file__, os.path.pardir, os.path.pardir)
         dir_path = os.path.abspath(parent_path)
         file_path = os.path.join(
             dir_path, 'i18n', 'af.qm')
+        if not os.path.isfile(file_path):
+            self.skipTest('Optional Afrikaans translation fixture is not built')
         translator = QTranslator()
-        translator.load(file_path)
+        self.assertTrue(translator.load(file_path))
         QCoreApplication.installTranslator(translator)
+        self.addCleanup(QCoreApplication.removeTranslator, translator)
 
         expected_message = 'Goeie more'
         real_message = QCoreApplication.translate("@default", 'Good morning')
@@ -50,6 +43,4 @@ class SafeTranslationsTest(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    suite = unittest.makeSuite(SafeTranslationsTest)
-    runner = unittest.TextTestRunner(verbosity=2)
-    runner.run(suite)
+    unittest.main()

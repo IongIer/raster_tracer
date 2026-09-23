@@ -14,11 +14,11 @@ __copyright__ = 'Copyright 2019, Mikhail Kondratyev'
 
 import unittest
 
-from qgis.PyQt.QtGui import QDockWidget
+from qgis.PyQt.QtWidgets import QDockWidget
 
-from raster_tracer_dockwidget import RasterTracerDockWidget
+from ..raster_tracer_dockwidget import RasterTracerDockWidget
 
-from utilities import get_qgis_app
+from .utilities import get_qgis_app
 
 QGIS_APP = get_qgis_app()
 
@@ -32,14 +32,15 @@ class RasterTracerDockWidgetTest(unittest.TestCase):
 
     def tearDown(self):
         """Runs after each test."""
+        self.dockwidget.deleteLater()
         self.dockwidget = None
 
     def test_dockwidget_ok(self):
         """Test we can click OK."""
-        pass
+        self.assertIsInstance(self.dockwidget, QDockWidget)
+        self.assertTrue(self.dockwidget.checkBoxPreview.isChecked())
+        self.assertAlmostEqual(
+            self.dockwidget.previewWidthSpinBox.value(), 2.7)
 
 if __name__ == "__main__":
-    suite = unittest.makeSuite(RasterTracerDialogTest)
-    runner = unittest.TextTestRunner(verbosity=2)
-    runner.run(suite)
-
+    unittest.main()

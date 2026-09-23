@@ -1,0 +1,47 @@
+name: QGIS compatibility
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: QGIS ${{ matrix.qgis }} / Qt ${{ matrix.qt }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - qgis: '3.40'
+            qt: 5
+            image: qgis/qgis:3.40-bookworm@sha256:96ae9dab2e81d05b5d08913b789525db6d203a009d66ca1aff437da73d5f4eb2
+          - qgis: '3.44'
+            qt: 5
+            image: qgis/qgis:3.44-bookworm@sha256:90844fef63a85763f8817c23cc21994c8822de7a31238df0e35260620be882c0
+          - qgis: '4.0'
+            qt: 6
+            image: qgis/qgis:4.0-trixie@sha256:23c12670e69909e8659a5c098aa307996735a5763b9ff9c3268bdeeee1a10916
+    container:
+      image: ${{ matrix.image }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package the plugin
+        run: python3 scripts/package-plugin.py --output /tmp/raster-tracer.zip
+      - name: Test the installable ZIP
+        run: >-
+          python3 scripts/run-tests.py
+          --plugin-zip /tmp/raster-tracer.zip
+          --expected-qgis '${{ matrix.qgis }}'
+          --expected-qt-major '${{ matrix.qt }}'

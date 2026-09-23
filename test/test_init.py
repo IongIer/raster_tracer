@@ -8,10 +8,10 @@ __license__ = "GPL"
 __copyright__ = 'Copyright 2012, Australia Indonesia Facility for '
 __copyright__ += 'Disaster Reduction'
 
-import os
 import unittest
 import logging
 import configparser
+from .utilities import PLUGIN_DIR
 
 LOGGER = logging.getLogger('QGIS')
 
@@ -42,9 +42,7 @@ class TestInit(unittest.TestCase):
             'email',
             'author']
 
-        file_path = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), os.pardir,
-            'metadata.txt'))
+        file_path = PLUGIN_DIR / 'metadata.txt'
         LOGGER.info(file_path)
         metadata = []
         parser = configparser.ConfigParser()
