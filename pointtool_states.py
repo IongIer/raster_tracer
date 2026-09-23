@@ -1,26 +1,26 @@
-'''
+"""
 Module contains States for pointtool.
-'''
+"""
 
-from math import atan2, cos, sin, radians
+from math import atan2, cos, radians, sin
 
-from qgis.core import QgsApplication, QgsMessageLog, Qgis
+from qgis.core import Qgis, QgsApplication, QgsMessageLog
 
 from .autotrace import AutotraceSubTask
 
 
 class State:
-    '''
+    """
     Abstract class for the state
-    '''
+    """
 
     def __init__(self, pointtool):
         self.pointtool = pointtool
 
     def click_rmb(self, mouseEvent, vlayer):
-        '''
+        """
         Event when the user clicks on the map with the right button
-        '''
+        """
 
         self.pointtool._cancel_inflight_segment()
 
@@ -41,9 +41,9 @@ class State:
         self.pointtool.change_state(WaitingFirstPointState)
 
     def click_lmb(self, mouseEvent, vlayer):
-        '''
+        """
         Event when the user clicks on the map with the left button
-        '''
+        """
 
         # self.pointtool.last_mouse_event_pos = mouseEvent.pos()
         # hide rubber_band
@@ -54,11 +54,11 @@ class State:
             if not self.pointtool.has_pending_preview_commit():
                 self.pointtool.display_message(
                     " ",
-                    "Please wait till the last segment is finished" +
-                    " or terminate tracing by hitting Esc",
-                    level='Critical',
+                    "Please wait till the last segment is finished"
+                    + " or terminate tracing by hitting Esc",
+                    level="Critical",
                     duration=1,
-                    )
+                )
             return False
 
         # acquire point coordinates from mouseEvent
@@ -69,19 +69,24 @@ class State:
             self.pointtool.display_message(
                 "Missing Layer",
                 "Please select correct raster layer",
-                level='Critical',
+                level="Critical",
                 duration=2,
-                )
+            )
             return False
 
         if self.pointtool.snap2_tolerance:
-            x1, y1 = self.pointtool.snap_to_itself(x1, y1, self.pointtool.snap2_tolerance)
+            x1, y1 = self.pointtool.snap_to_itself(
+                x1, y1, self.pointtool.snap2_tolerance
+            )
         i1, j1 = self.pointtool.to_indexes(x1, y1)
         self.pointtool.add_anchor_points(x1, y1, i1, j1)
 
         # Ensure the rubber band has a stable origin even if previous anchors
         # were pruned and the state didn't reset yet.
-        if isinstance(self, WaitingMiddlePointState) and len(self.pointtool.anchors) == 1:
+        if (
+            isinstance(self, WaitingMiddlePointState)
+            and len(self.pointtool.anchors) == 1
+        ):
             QgsMessageLog.logMessage(
                 "[state] Resetting to first point after anchor loss",
                 "RasterTracer",
@@ -95,12 +100,12 @@ class State:
 
 
 class WaitingFirstPointState(State):
-    '''
+    """
     State of waiting the user to click on the first point in the line.
     Is active when the user is about to begin tracing new line.
     After the user clicks on the left mouse button
     it changes the state to WaitingMiddlePointState.
-    '''
+    """
 
     def click_lmb(self, mouseEvent, vlayer):
 
@@ -116,14 +121,14 @@ class WaitingFirstPointState(State):
 
 
 class WaitingMiddlePointState(State):
-    '''
+    """
     State of waiting the user to click on the next point in the line.
     Is active when the user is already clicked on at least one point.
     After the user clicks on the left mouse button it keeps the state.
     After the user clicks on the right mouse button it finishes the line and
     switches the state to WaitingFirstPointState.
 
-    '''
+    """
 
     def click_lmb(self, mouseEvent, vlayer):
         if super().click_lmb(mouseEvent, vlayer) is False:
@@ -132,18 +137,17 @@ class WaitingMiddlePointState(State):
         x1, y1, i1, j1 = self.pointtool.anchors[-1]
 
         if self.pointtool.tracing_mode.is_auto():
-
             # perform autotrace
             self.autotrace_task = AutotraceSubTask(
                 self.pointtool,
                 vlayer,
                 clicked_point=self.pointtool.anchors[-1],
-                )
+            )
             # self.pointtool.remove_last_anchor_point(undo_edit=False, redraw=False)
 
             QgsApplication.taskManager().addTask(
                 self.autotrace_task,
-                )
+            )
 
         else:
             self.pointtool.trace(x1, y1, i1, j1, vlayer, click_pos=mouseEvent.pos())
@@ -157,10 +161,10 @@ class WaitingMiddlePointState(State):
 
 
 class AutoFollowingLineState(State):
-    '''
+    """
     This state is active when raster_tracer is trying to
     perform auto-following of the line.
-    '''
+    """
 
     def click_lmb(self, mouseEvent, vlayer):
         if super().click_lmb(mouseEvent, vlayer) is False:
@@ -176,7 +180,6 @@ class AutoFollowingLineState(State):
             self.pointtool.redraw()
             self.pointtool.update_rubber_band()
             # print('a')
-         
 
     def click_rmb(self, mouseEvent, vlayer):
         super().click_rmb(mouseEvent, vlayer)
@@ -223,7 +226,7 @@ class AutoFollowingLineState(State):
         i, j = best_point
         x, y = self.pointtool.to_coords(i, j)
 
-        if len(self.pointtool.anchors)>1:
+        if len(self.pointtool.anchors) > 1:
             self.pointtool.draw_path(best_path, vlayer, was_tracing=True)
             self.pointtool.add_anchor_points(x, y, i, j)
         else:
@@ -233,10 +236,10 @@ class AutoFollowingLineState(State):
         self.pointtool.pan(x, y)
 
     def search_near_points(self, point, direction, distance):
-        '''
+        """
         Returns list of points near last point in the given direction,
         at a given distance with given space between points.
-        '''
+        """
 
         points = []
 

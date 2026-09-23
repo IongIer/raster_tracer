@@ -51,7 +51,7 @@ PY_FILES = \
 
 PYTHON ?= python3
 PYRCC ?= pyrcc5
-PEP8 ?= pycodestyle
+UV ?= uv
 
 UI_FILES = raster_tracer_dockwidget_base.ui
 
@@ -60,8 +60,6 @@ EXTRAS = metadata.txt icon.png
 EXTRA_DIRS =
 
 COMPILED_RESOURCE_FILES = resources.py
-
-PEP8EXCLUDE=pydev,resources.py,conf.py,third_party,ui
 
 # QGISDIR points to the location where your plugin should be installed.
 # This varies by platform, relative to your HOME directory:
@@ -84,14 +82,13 @@ PLUGIN_UPLOAD = $(c)/plugin_upload.py
 
 RESOURCE_SRC=$(shell grep '^ *<file' resources.qrc | sed 's@</file>@@g;s/.*>//g' | tr '\n' ' ')
 
-.PHONY: default
+.PHONY: default compile test package lint format format-check
 default:
-	@echo While you can use make to build and deploy your plugin, pb_tool
-	@echo is a much better solution.
-	@echo A Python script, pb_tool provides platform independent management of
-	@echo your plugins and runs anywhere.
-	@echo You can install pb_tool using: pip install pb_tool
-	@echo See https://g-sherman.github.io/plugin_build_tool/ for info. 
+	@echo "make lint / format / format-check: check or format Python with uv and Ruff"
+	@echo "make package: build the plugin ZIP using checked-in resources.py"
+	@echo "make compile: regenerate resources.py after asset changes (requires pyrcc5)"
+	@echo "make test: run tests with a configured PyQGIS Python"
+	@echo "See README.md and test/README.md for setup and QGIS container tests."
 
 compile: $(COMPILED_RESOURCE_FILES)
 
@@ -152,7 +149,7 @@ zip: deploy dclean
 	rm -f $(PLUGINNAME).zip
 	cd $(HOME)/$(QGISDIR)/python/plugins; zip -9r $(CURDIR)/$(PLUGINNAME).zip $(PLUGINNAME)
 
-package: compile
+package:
 	$(PYTHON) scripts/package-plugin.py
 
 upload: zip
@@ -168,7 +165,7 @@ transup:
 	@echo "Updating translation files with any new strings."
 	@echo "------------------------------------------------"
 	@chmod +x scripts/update-strings.sh
-	@scripts/update-strings.sh $(LOCALES)
+	@PYTHON="$(PYTHON)" scripts/update-strings.sh $(LOCALES)
 
 transcompile:
 	@echo
@@ -199,28 +196,11 @@ doc:
 	@echo "------------------------------------"
 	cd help; make html
 
-pylint:
-	@echo
-	@echo "-----------------"
-	@echo "Pylint violations"
-	@echo "-----------------"
-	@pylint --reports=n --rcfile=pylintrc . || true
-	@echo
-	@echo "----------------------"
-	@echo "If you get a 'no module named qgis.core' error, try sourcing"
-	@echo "the helper script we have provided first then run make pylint."
-	@echo "e.g. source run-env-linux.sh <path to qgis install>; make pylint"
-	@echo "----------------------"
+lint:
+	$(UV) run --locked ruff check .
 
+format:
+	$(UV) run --locked ruff format .
 
-# Run pep8 style checking
-#http://pypi.python.org/pypi/pep8
-pep8:
-	@echo
-	@echo "-----------"
-	@echo "PEP8 issues"
-	@echo "-----------"
-	@$(PEP8) --repeat --ignore=E203,E121,E122,E123,E124,E125,E126,E127,E128 --exclude $(PEP8EXCLUDE) . || true
-	@echo "-----------"
-	@echo "Ignored in PEP8 check:"
-	@echo $(PEP8EXCLUDE)
+format-check:
+	$(UV) run --locked ruff format --check .

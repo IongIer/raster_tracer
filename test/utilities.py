@@ -1,11 +1,10 @@
 """Shared real QGIS application and temporary-fixture helpers."""
 
-from pathlib import Path
 import gc
 import time
+from pathlib import Path
 
 from .. import __file__ as plugin_file
-
 
 PLUGIN_DIR = Path(plugin_file).parent
 QGIS_APP = None
@@ -16,9 +15,10 @@ IFACE = None
 
 def get_qgis_app():
     """Start QGIS once; missing QGIS is a test failure, never a silent skip."""
-    from qgis.PyQt.QtWidgets import QMainWindow
     from qgis.gui import QgsMapCanvas, QgsMapToolPan
+    from qgis.PyQt.QtWidgets import QMainWindow
     from qgis.testing import start_app
+
     from .qgis_interface import QgisInterface
 
     global QGIS_APP, CANVAS, PARENT, IFACE
@@ -35,9 +35,9 @@ def get_qgis_app():
 
 def stop_qgis_widgets():
     """Destroy canvas widgets before QGIS unloads its providers at exit."""
+    from qgis.core import QgsProject
     from qgis.PyQt import sip
     from qgis.PyQt.QtCore import QCoreApplication, QEvent
-    from qgis.core import QgsProject
 
     global CANVAS, PARENT, IFACE
     if CANVAS is not None:
@@ -59,7 +59,7 @@ def wait_until(predicate, timeout=10):
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() >= deadline:
-            raise AssertionError('Timed out waiting for QGIS task')
+            raise AssertionError("Timed out waiting for QGIS task")
         QTest.qWait(10)
 
 
@@ -70,8 +70,7 @@ def create_rgb_raster(path):
 
     pixels = np.full((16, 16), 255, dtype=np.uint8)
     pixels[8, 2:14] = 0
-    dataset = gdal.GetDriverByName('GTiff').Create(
-        str(path), 16, 16, 3, gdal.GDT_Byte)
+    dataset = gdal.GetDriverByName("GTiff").Create(str(path), 16, 16, 3, gdal.GDT_Byte)
     dataset.SetGeoTransform((1000, 1, 0, 2000, 0, -1))
     crs = osr.SpatialReference()
     crs.ImportFromEPSG(3857)

@@ -25,7 +25,7 @@
 
 
 # noinspection PyPep8Naming
-def classFactory(iface):  # pylint: disable=invalid-name
+def classFactory(iface):
     """Load RasterTracer class from file RasterTracer.
 
     :param iface: A QGIS interface instance.
@@ -33,4 +33,5 @@ def classFactory(iface):  # pylint: disable=invalid-name
     """
     #
     from .raster_tracer import RasterTracer
+
     return RasterTracer(iface)

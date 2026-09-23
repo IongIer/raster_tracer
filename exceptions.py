@@ -1,3 +1,2 @@
-
 class OutsideMapError(Exception):
     pass

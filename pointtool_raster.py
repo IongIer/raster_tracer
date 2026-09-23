@@ -4,12 +4,11 @@ import os
 import time
 
 import numpy as np
-from qgis.PyQt.QtGui import QColor
 from qgis.core import Qgis, QgsMessageLog, QgsProject
+from qgis.PyQt.QtGui import QColor
 
 from .exceptions import OutsideMapError
 from .utils import PossiblyIndexedImageError, get_whole_raster
-
 
 PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
 
@@ -59,7 +58,7 @@ class RasterTracingContext:
             tool.display_message(
                 "Missing Layer",
                 "Can't trace indexed or gray image",
-                level='Critical',
+                level="Critical",
                 duration=2,
             )
             self.raster_sampler = None
@@ -92,7 +91,7 @@ class RasterTracingContext:
             self._tool.display_message(
                 "Missing Layer",
                 "Can't trace indexed or gray image",
-                level='Critical',
+                level="Critical",
                 duration=2,
             )
             self.raster_sampler = None
@@ -189,15 +188,11 @@ class RasterTracingContext:
 
         prep_start = time.perf_counter() if PROFILE_ENABLED else None
         cleaned_bands = [np.nan_to_num(band, copy=False) for band in bands]
-        prep_duration = (
-            time.perf_counter() - prep_start
-        ) if PROFILE_ENABLED else None
+        prep_duration = (time.perf_counter() - prep_start) if PROFILE_ENABLED else None
 
         grid_start = time.perf_counter() if PROFILE_ENABLED else None
         grid = cleaned_bands[0] + cleaned_bands[1] + cleaned_bands[2]
-        grid_duration = (
-            time.perf_counter() - grid_start
-        ) if PROFILE_ENABLED else None
+        grid_duration = (time.perf_counter() - grid_start) if PROFILE_ENABLED else None
 
         self.sample = tuple(cleaned_bands)
         self.grid = grid
@@ -205,9 +200,7 @@ class RasterTracingContext:
         self.window_shape = shape
         self.grid_changed = None
 
-        total_duration = (
-            time.perf_counter() - load_start
-        ) if PROFILE_ENABLED else None
+        total_duration = (time.perf_counter() - load_start) if PROFILE_ENABLED else None
 
         if PROFILE_ENABLED:
             color_bytes = sum(arr.nbytes for arr in self.sample)
@@ -221,8 +214,8 @@ class RasterTracingContext:
                     "[profiling] window_prepare "
                     f"reason={reason} origin={origin} shape={shape} "
                     f"prep={_fmt(prep_duration)} grid_sum={_fmt(grid_duration)} "
-                    f"total={_fmt(total_duration)} color_mb={(color_bytes / (1024 ** 2)):.1f} "
-                    f"grid_mb={(grid_bytes / (1024 ** 2)):.1f}"
+                    f"total={_fmt(total_duration)} color_mb={(color_bytes / (1024**2)):.1f} "
+                    f"grid_mb={(grid_bytes / (1024**2)):.1f}"
                 ),
                 "RasterTracer",
                 Qgis.MessageLevel.Info,
@@ -254,10 +247,11 @@ class RasterTracingContext:
         local_i = i - origin_i
         local_j = j - origin_j
         if (
-            local_i < 0 or local_j < 0 or
-            self.window_shape is None or
-            local_i >= self.window_shape[0] or
-            local_j >= self.window_shape[1]
+            local_i < 0
+            or local_j < 0
+            or self.window_shape is None
+            or local_i >= self.window_shape[0]
+            or local_j >= self.window_shape[1]
         ):
             raise OutsideMapError
         return local_i, local_j
@@ -267,9 +261,9 @@ class RasterTracingContext:
     # ------------------------------------------------------------------
     def recompute_trace_grid(self, reason):
         if (
-            not PROFILE_ENABLED and
-            self.sample is None and
-            self._tool.trace_color_value is None
+            not PROFILE_ENABLED
+            and self.sample is None
+            and self._tool.trace_color_value is None
         ):
             self.grid_changed = None
             return
@@ -293,17 +287,23 @@ class RasterTracingContext:
             state = "computed"
 
         if PROFILE_ENABLED:
-            total_duration = time.perf_counter() - start_time if start_time is not None else None
+            total_duration = (
+                time.perf_counter() - start_time if start_time is not None else None
+            )
             diff_text = f"{diff_duration:.2f}s" if diff_duration is not None else "n/a"
-            total_text = f"{total_duration:.2f}s" if total_duration is not None else "n/a"
+            total_text = (
+                f"{total_duration:.2f}s" if total_duration is not None else "n/a"
+            )
             grid_changed_bytes = (
-                self.grid_changed.nbytes if isinstance(self.grid_changed, np.ndarray) else 0
+                self.grid_changed.nbytes
+                if isinstance(self.grid_changed, np.ndarray)
+                else 0
             )
             QgsMessageLog.logMessage(
                 (
                     "[profiling] trace_color_changed "
                     f"state={state} reason={reason} diff={diff_text} "
-                    f"total={total_text} grid_changed_mb={ (grid_changed_bytes / (1024 ** 2)):.1f}"
+                    f"total={total_text} grid_changed_mb={(grid_changed_bytes / (1024**2)):.1f}"
                 ),
                 "RasterTracer",
                 Qgis.MessageLevel.Info,
@@ -341,7 +341,7 @@ class RasterTracingContext:
         else:
             grid_to_use = self.grid_changed
 
-        grid_for_path = grid_to_use.astype(np.dtype('l'))
+        grid_for_path = grid_to_use.astype(np.dtype("l"))
         origin_i, origin_j = self.window_origin
 
         return {

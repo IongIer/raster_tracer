@@ -1,56 +1,63 @@
 #!/bin/bash
-LOCALES=$*
+set -euo pipefail
 
-# Get newest .py files so we don't update strings unnecessarily
+if [ "$#" -eq 0 ]; then
+  echo "No locales requested; translation files are unchanged."
+  exit 0
+fi
 
+cd "$(dirname "$0")/.."
+
+# Use the runtime manifest so environments, tests and builds are never scanned.
+# Generated resources.py contains no translatable source strings.
+SOURCE_FILES=$("${PYTHON:-python3}" - <<'PY'
+import configparser
+
+config = configparser.ConfigParser()
+with open("pb_tool.cfg") as manifest:
+    config.read_file(manifest)
+files = config["files"]
+names = set(files["python_files"].split())
+names.update(files["main_dialog"].split())
+names.update(files["compiled_ui_files"].split())
+names.discard("resources.py")
+print("\n".join(sorted(names)))
+PY
+)
+mapfile -t PYTHON_FILES <<< "$SOURCE_FILES"
+
+# Get newest source timestamp so we don't update strings unnecessarily.
 CHANGED_FILES=0
-PYTHON_FILES=`find . -regex ".*\(ui\|py\)$" -type f`
-for PYTHON_FILE in $PYTHON_FILES
-do
-  CHANGED=$(stat -c %Y $PYTHON_FILE)
-  if [ ${CHANGED} -gt ${CHANGED_FILES} ]
-  then
-    CHANGED_FILES=${CHANGED}
+for PYTHON_FILE in "${PYTHON_FILES[@]}"; do
+  CHANGED=$(stat -c %Y "$PYTHON_FILE")
+  if [ "$CHANGED" -gt "$CHANGED_FILES" ]; then
+    CHANGED_FILES=$CHANGED
   fi
 done
 
-# Qt translation stuff
-# for .ts file
 UPDATE=false
-for LOCALE in ${LOCALES}
-do
+for LOCALE in "$@"; do
   TRANSLATION_FILE="i18n/$LOCALE.ts"
-  if [ ! -f ${TRANSLATION_FILE} ]
-  then
-    # Force translation string collection as we have a new language file
-    touch ${TRANSLATION_FILE}
+  if [ ! -f "$TRANSLATION_FILE" ]; then
     UPDATE=true
     break
   fi
 
-  MODIFICATION_TIME=$(stat -c %Y ${TRANSLATION_FILE})
-  if [ ${CHANGED_FILES} -gt ${MODIFICATION_TIME} ]
-  then
-    # Force translation string collection as a .py file has been updated
+  MODIFICATION_TIME=$(stat -c %Y "$TRANSLATION_FILE")
+  if [ "$CHANGED_FILES" -gt "$MODIFICATION_TIME" ]; then
     UPDATE=true
     break
   fi
 done
 
-if [ ${UPDATE} == true ]
-# retrieve all python files
-then
-  echo ${PYTHON_FILES}
-  # update .ts
+if [ "$UPDATE" = true ]; then
+  printf '%s\n' "${PYTHON_FILES[@]}"
   echo "Please provide translations by editing the translation files below:"
-  for LOCALE in ${LOCALES}
-  do
-    echo "i18n/"${LOCALE}".ts"
-    # Note we don't use pylupdate with qt .pro file approach as it is flakey
-    # about what is made available.
-    pylupdate4 -noobsolete ${PYTHON_FILES} -ts i18n/${LOCALE}.ts
+  for LOCALE in "$@"; do
+    echo "i18n/$LOCALE.ts"
+    # This legacy collector still requires pylupdate4; see test/README.md.
+    pylupdate4 -noobsolete "${PYTHON_FILES[@]}" -ts "i18n/$LOCALE.ts"
   done
 else
-  echo "No need to edit any translation files (.ts) because no python files"
-  echo "has been updated since the last update translation. "
+  echo "No source files have changed since the last translation update."
 fi

@@ -1,15 +1,11 @@
-from math import atan2, cos, sin, radians
+from math import atan2, cos, radians, sin
 
-from qgis.core import QgsTask, QgsMessageLog, Qgis
+from qgis.core import Qgis, QgsMessageLog, QgsTask
 
 
 class AutotraceSubTask(QgsTask):
-
     def __init__(self, pointtool, vlayer, clicked_point=None):
-        super().__init__(
-            'Task for switching mode to autotrace',
-            QgsTask.Flag.CanCancel
-                )
+        super().__init__("Task for switching mode to autotrace", QgsTask.Flag.CanCancel)
         self.pointtool = pointtool
         self.vlayer = vlayer
         self.pseudo_anchors = []
@@ -29,7 +25,6 @@ class AutotraceSubTask(QgsTask):
         result_path = self.follow_next_segment(initial=True)
         self.path += result_path
 
-
         for _ in range(5):
             # check isCanceled() to handle cancellation
             if self.isCanceled():
@@ -39,7 +34,6 @@ class AutotraceSubTask(QgsTask):
             self.path += result_path[1:]
 
         return True
-
 
     def follow_next_segment(self, initial=False):
         _, _, i0, j0 = self.pseudo_anchors[-2]
@@ -86,12 +80,11 @@ class AutotraceSubTask(QgsTask):
 
         return best_path
 
-
     def search_near_points(self, point, direction, distance):
-        '''
+        """
         Returns list of points near last point in the given direction,
         at a given distance with given space between points.
-        '''
+        """
 
         points = []
 
@@ -108,9 +101,9 @@ class AutotraceSubTask(QgsTask):
         return points
 
     def finished(self, result):
-        '''
+        """
         Call callback function if self.run was successful
-        '''
+        """
 
         if result:
             vlayer = self.vlayer
@@ -121,11 +114,10 @@ class AutotraceSubTask(QgsTask):
             self.pointtool.redraw()
             self.pointtool.update_rubber_band()
 
-
     def cancel(self):
-        '''
+        """
         Executed when run catches cancel signal.
         Terminates the QgsTask.
-        '''
+        """
 
         super().cancel()

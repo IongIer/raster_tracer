@@ -21,21 +21,27 @@
  *                                                                         *
  ***************************************************************************/
 """
-from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication, Qt, QObject, QEvent
-from qgis.PyQt.QtGui import QIcon, QColor
-from qgis.PyQt.QtWidgets import QAction, QApplication
-# Initialize Qt resources from file resources.py
-from . import resources  # pylint: disable=unused-import
 
+import os.path
+
+from qgis.core import QgsProject, QgsVectorLayer
+from qgis.PyQt.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QSettings,
+    Qt,
+    QTranslator,
+)
+from qgis.PyQt.QtGui import QColor, QIcon
+from qgis.PyQt.QtWidgets import QAction, QApplication
+
+# Initialize Qt resources from file resources.py
+from . import resources  # noqa: F401 - Registers the plugin's Qt resources.
+from .pointtool import PointTool
 
 # Import the code for the DockWidget
 from .raster_tracer_dockwidget import RasterTracerDockWidget
-import os.path
-
-
-from qgis.core import QgsProject, QgsVectorLayer
-
-from .pointtool import PointTool
 
 
 class LayerTreeShortcutFilter(QObject):
@@ -49,11 +55,11 @@ class LayerTreeShortcutFilter(QObject):
     def eventFilter(self, obj, event):
         pointtool = self.pointtool
         if (
-            pointtool is not None and
-            event.type() == QEvent.Type.KeyPress and
-            event.modifiers() == Qt.KeyboardModifier.NoModifier and
-            pointtool.has_active_trace() and
-            event.key() in pointtool.handled_shortcut_keys()
+            pointtool is not None
+            and event.type() == QEvent.Type.KeyPress
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and pointtool.has_active_trace()
+            and event.key() in pointtool.handled_shortcut_keys()
         ):
             pointtool.keyPressEvent(event)
             event.accept()
@@ -79,11 +85,10 @@ class RasterTracer:
         self.plugin_dir = os.path.dirname(__file__)
 
         # initialize locale
-        locale = QSettings().value('locale/userLocale', 'en', type=str)[0:2]
+        locale = QSettings().value("locale/userLocale", "en", type=str)[0:2]
         locale_path = os.path.join(
-            self.plugin_dir,
-            'i18n',
-            'RasterTracer_{}.qm'.format(locale))
+            self.plugin_dir, "i18n", "RasterTracer_{}.qm".format(locale)
+        )
 
         if os.path.exists(locale_path):
             self.translator = QTranslator()
@@ -92,10 +97,10 @@ class RasterTracer:
 
         # Declare instance attributes
         self.actions = []
-        self.menu = self.tr(u'&Raster Tracer')
+        self.menu = self.tr("&Raster Tracer")
         # TODO: We are going to let the user set this up in a future iteration
-        self.toolbar = self.iface.addToolBar(u'RasterTracer')
-        self.toolbar.setObjectName(u'RasterTracer')
+        self.toolbar = self.iface.addToolBar("RasterTracer")
+        self.toolbar.setObjectName("RasterTracer")
 
         # print "** INITIALIZING RasterTracer"
 
@@ -106,7 +111,7 @@ class RasterTracer:
     def _coerce_spin_box_int(self, candidate_value, spin_box):
         """Return a spin box-friendly integer from persisted settings."""
         default_value = spin_box.value()
-        if candidate_value in (None, ''):
+        if candidate_value in (None, ""):
             return default_value
         try:
             coerced = int(round(float(candidate_value)))
@@ -131,18 +136,20 @@ class RasterTracer:
         :rtype: QString
         """
         # noinspection PyTypeChecker,PyArgumentList,PyCallByClass
-        return QCoreApplication.translate('RasterTracer', message)
+        return QCoreApplication.translate("RasterTracer", message)
 
-    def add_action(self,
-                   icon_path,
-                   text,
-                   callback,
-                   enabled_flag=True,
-                   add_to_menu=True,
-                   add_to_toolbar=True,
-                   status_tip=None,
-                   whats_this=None,
-                   parent=None):
+    def add_action(
+        self,
+        icon_path,
+        text,
+        callback,
+        enabled_flag=True,
+        add_to_menu=True,
+        add_to_toolbar=True,
+        status_tip=None,
+        whats_this=None,
+        parent=None,
+    ):
         """Add a toolbar icon to the toolbar.
 
         :param icon_path: Path to the icon for this action. Can be a resource
@@ -197,9 +204,7 @@ class RasterTracer:
             self.toolbar.addAction(action)
 
         if add_to_menu:
-            self.iface.addPluginToMenu(
-                self.menu,
-                action)
+            self.iface.addPluginToMenu(self.menu, action)
 
         self.actions.append(action)
 
@@ -208,12 +213,13 @@ class RasterTracer:
     def initGui(self):
         """Create the menu entries and toolbar icons inside the QGIS GUI."""
 
-        icon_path = ':/plugins/raster_tracer/icon.png'
+        icon_path = ":/plugins/raster_tracer/icon.png"
         self.add_action(
             icon_path,
-            text=self.tr(u'Trace Raster'),
+            text=self.tr("Trace Raster"),
             callback=self.run,
-            parent=self.iface.mainWindow())
+            parent=self.iface.mainWindow(),
+        )
 
     # -------------------------------------------------------------------------
 
@@ -245,9 +251,7 @@ class RasterTracer:
         # print( "** UNLOAD RasterTracer")
 
         for action in self.actions:
-            self.iface.removePluginMenu(
-                self.tr(u'&Raster Tracer'),
-                action)
+            self.iface.removePluginMenu(self.tr("&Raster Tracer"), action)
             self.iface.removeToolBarIcon(action)
         # remove the toolbar
         del self.toolbar
@@ -255,7 +259,7 @@ class RasterTracer:
     # -------------------------------------------------------------------------
 
     def activate_map_tool(self):
-        ''' Activates map tool'''
+        """Activates map tool"""
         self.last_maptool = self.iface.mapCanvas().mapTool()
         self.map_canvas.setMapTool(self.tool_identify)
 
@@ -281,8 +285,7 @@ class RasterTracer:
         self.dockwidget.closingPlugin.connect(self.onClosePlugin)
 
         # show the dockwidget
-        self.iface.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea, self.dockwidget)
+        self.iface.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dockwidget)
         self.dockwidget.show()
 
         self.map_canvas = self.iface.mapCanvas()
@@ -305,9 +308,11 @@ class RasterTracer:
             self.layer_tree_filter.set_pointtool(self.tool_identify)
 
         settings = QSettings()
-        preview_enabled = settings.value('RasterTracer/preview/enabled', True, type=bool)
-        preview_color_name = settings.value('RasterTracer/preview/color', '#FF1493')
-        preview_width = settings.value('RasterTracer/preview/width', 2.7, type=float)
+        preview_enabled = settings.value(
+            "RasterTracer/preview/enabled", True, type=bool
+        )
+        preview_color_name = settings.value("RasterTracer/preview/color", "#FF1493")
+        preview_width = settings.value("RasterTracer/preview/width", 2.7, type=float)
 
         try:
             preview_width = float(preview_width)
@@ -316,7 +321,7 @@ class RasterTracer:
 
         preview_color = QColor(preview_color_name)
         if not preview_color.isValid():
-            preview_color = QColor('#FF1493')
+            preview_color = QColor("#FF1493")
 
         self.tool_identify.set_preview_color(preview_color)
         self.tool_identify.set_preview_width(preview_width)
@@ -337,8 +342,8 @@ class RasterTracer:
         self.dockwidget.previewColorButton.setEnabled(preview_enabled)
         self.dockwidget.previewWidthSpinBox.setEnabled(preview_enabled)
 
-        color_enabled = settings.value('RasterTracer/color/enabled', False, type=bool)
-        color_value = settings.value('RasterTracer/color/value', None)
+        color_enabled = settings.value("RasterTracer/color/enabled", False, type=bool)
+        color_value = settings.value("RasterTracer/color/value", None)
         stored_color = self.dockwidget.mColorButton.color()
         if color_value is not None:
             candidate_color = QColor(color_value)
@@ -353,9 +358,9 @@ class RasterTracer:
         self.dockwidget.mColorButton.setColor(stored_color)
         self.dockwidget.mColorButton.blockSignals(False)
 
-        snap_enabled = settings.value('RasterTracer/snap/enabled', False, type=bool)
+        snap_enabled = settings.value("RasterTracer/snap/enabled", False, type=bool)
         snap_value = settings.value(
-            'RasterTracer/snap/tolerance',
+            "RasterTracer/snap/tolerance",
             self.dockwidget.mQgsSpinBox.value(),
         )
         snap_value = self._coerce_spin_box_int(snap_value, self.dockwidget.mQgsSpinBox)
@@ -368,12 +373,14 @@ class RasterTracer:
         self.dockwidget.mQgsSpinBox.setValue(snap_value)
         self.dockwidget.mQgsSpinBox.blockSignals(False)
 
-        snap2_enabled = settings.value('RasterTracer/snap2/enabled', False, type=bool)
+        snap2_enabled = settings.value("RasterTracer/snap2/enabled", False, type=bool)
         snap2_value = settings.value(
-            'RasterTracer/snap2/tolerance',
+            "RasterTracer/snap2/tolerance",
             self.dockwidget.SpinBoxSnap.value(),
         )
-        snap2_value = self._coerce_spin_box_int(snap2_value, self.dockwidget.SpinBoxSnap)
+        snap2_value = self._coerce_spin_box_int(
+            snap2_value, self.dockwidget.SpinBoxSnap
+        )
 
         self.dockwidget.checkBoxSnap2.blockSignals(True)
         self.dockwidget.checkBoxSnap2.setChecked(snap2_enabled)
@@ -383,7 +390,7 @@ class RasterTracer:
         self.dockwidget.SpinBoxSnap.setValue(snap2_value)
         self.dockwidget.SpinBoxSnap.blockSignals(False)
 
-        smooth_enabled = settings.value('RasterTracer/trace/smooth', True, type=bool)
+        smooth_enabled = settings.value("RasterTracer/trace/smooth", True, type=bool)
         self.dockwidget.checkBoxSmooth.blockSignals(True)
         self.dockwidget.checkBoxSmooth.setChecked(smooth_enabled)
         self.dockwidget.checkBoxSmooth.blockSignals(False)
@@ -393,11 +400,18 @@ class RasterTracer:
         self.checkBoxSmooth_changed()
         self.checkBoxColor_changed()
 
-        excluded_layers = [l for l in QgsProject().instance().mapLayers().values() 
-                                                    if isinstance(l, QgsVectorLayer)]
+        excluded_layers = [
+            layer
+            for layer in QgsProject().instance().mapLayers().values()
+            if isinstance(layer, QgsVectorLayer)
+        ]
         self.dockwidget.mMapLayerComboBox.setExceptedLayerList(excluded_layers)
-        self.dockwidget.mMapLayerComboBox.currentIndexChanged.connect(self.raster_layer_changed)
-        self.tool_identify.raster_layer_has_changed(self.dockwidget.mMapLayerComboBox.currentLayer())
+        self.dockwidget.mMapLayerComboBox.currentIndexChanged.connect(
+            self.raster_layer_changed
+        )
+        self.tool_identify.raster_layer_has_changed(
+            self.dockwidget.mMapLayerComboBox.currentLayer()
+        )
 
         self.dockwidget.checkBoxColor.stateChanged.connect(self.checkBoxColor_changed)
         self.dockwidget.mColorButton.colorChanged.connect(self.checkBoxColor_changed)
@@ -413,20 +427,27 @@ class RasterTracer:
         self.dockwidget.checkBoxSnap2.stateChanged.connect(self.checkBoxSnap2_changed)
         self.dockwidget.SpinBoxSnap.valueChanged.connect(self.checkBoxSnap2_changed)
 
-        self.dockwidget.checkBoxPreview.stateChanged.connect(self.preview_enabled_changed)
-        self.dockwidget.previewColorButton.colorChanged.connect(self.preview_color_changed)
-        self.dockwidget.previewWidthSpinBox.valueChanged.connect(self.preview_width_changed)
-
+        self.dockwidget.checkBoxPreview.stateChanged.connect(
+            self.preview_enabled_changed
+        )
+        self.dockwidget.previewColorButton.colorChanged.connect(
+            self.preview_color_changed
+        )
+        self.dockwidget.previewWidthSpinBox.valueChanged.connect(
+            self.preview_width_changed
+        )
 
     def raster_layer_changed(self):
-        self.tool_identify.raster_layer_has_changed(self.dockwidget.mMapLayerComboBox.currentLayer())
+        self.tool_identify.raster_layer_has_changed(
+            self.dockwidget.mMapLayerComboBox.currentLayer()
+        )
         self.checkBoxColor_changed()
 
     def checkBoxSmooth_changed(self):
         is_checked = self.dockwidget.checkBoxSmooth.isChecked() is True
         self.tool_identify.smooth_line = is_checked
         settings = QSettings()
-        settings.setValue('RasterTracer/trace/smooth', is_checked)
+        settings.setValue("RasterTracer/trace/smooth", is_checked)
 
     def checkBoxSnap_changed(self):
         settings = QSettings()
@@ -435,8 +456,8 @@ class RasterTracer:
             snap_value = int(self.dockwidget.mQgsSpinBox.value())
         except (TypeError, ValueError):
             snap_value = int(self.dockwidget.mQgsSpinBox.minimum())
-        settings.setValue('RasterTracer/snap/enabled', snap_enabled)
-        settings.setValue('RasterTracer/snap/tolerance', snap_value)
+        settings.setValue("RasterTracer/snap/enabled", snap_enabled)
+        settings.setValue("RasterTracer/snap/tolerance", snap_value)
 
         if snap_enabled:
             self.dockwidget.mQgsSpinBox.setEnabled(True)
@@ -452,8 +473,8 @@ class RasterTracer:
             snap_value = int(self.dockwidget.SpinBoxSnap.value())
         except (TypeError, ValueError):
             snap_value = int(self.dockwidget.SpinBoxSnap.minimum())
-        settings.setValue('RasterTracer/snap2/enabled', snap_enabled)
-        settings.setValue('RasterTracer/snap2/tolerance', snap_value)
+        settings.setValue("RasterTracer/snap2/enabled", snap_enabled)
+        settings.setValue("RasterTracer/snap2/tolerance", snap_value)
 
         if snap_enabled:
             self.dockwidget.SpinBoxSnap.setEnabled(True)
@@ -468,7 +489,7 @@ class RasterTracer:
         self.dockwidget.previewWidthSpinBox.setEnabled(enabled)
         self.tool_identify.set_preview_enabled(enabled)
         settings = QSettings()
-        settings.setValue('RasterTracer/preview/enabled', enabled)
+        settings.setValue("RasterTracer/preview/enabled", enabled)
 
     def preview_color_changed(self, color):
         if not isinstance(color, QColor):
@@ -476,7 +497,8 @@ class RasterTracer:
         self.tool_identify.set_preview_color(color)
         settings = QSettings()
         settings.setValue(
-            'RasterTracer/preview/color', color.name(QColor.NameFormat.HexArgb))
+            "RasterTracer/preview/color", color.name(QColor.NameFormat.HexArgb)
+        )
 
     def preview_width_changed(self, value):
         try:
@@ -485,8 +507,7 @@ class RasterTracer:
             width = 0.5
         self.tool_identify.set_preview_width(width)
         settings = QSettings()
-        settings.setValue('RasterTracer/preview/width', width)
-
+        settings.setValue("RasterTracer/preview/width", width)
 
     def turn_off_snap(self):
         self.dockwidget.checkBoxSnap.nextCheckState()
@@ -537,11 +558,11 @@ class RasterTracer:
         )
 
         settings = QSettings()
-        settings.setValue('RasterTracer/color/enabled', enabled)
+        settings.setValue("RasterTracer/color/enabled", enabled)
         if color.isValid():
             settings.setValue(
-                'RasterTracer/color/value',
-                color.name(QColor.NameFormat.HexArgb))
+                "RasterTracer/color/value", color.name(QColor.NameFormat.HexArgb)
+            )
 
         if enabled:
             self.tool_identify.trace_color_changed(color)

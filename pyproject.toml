@@ -1,0 +1,32 @@
+[project]
+name = "raster-tracer-dev"
+# Development-environment metadata; metadata.txt owns the plugin version.
+version = "0.0.0"
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff==0.16.8"]
+
+[tool.uv]
+package = false
+required-version = ">=0.8.4"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 88
+extend-exclude = ["resources.py", "help/build"]
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "RUF100"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["raster_tracer"]
+known-third-party = ["qgis", "numpy", "osgeo"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+exclude = ["*.md"]

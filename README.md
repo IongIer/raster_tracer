@@ -23,10 +23,14 @@ The same plugin package supports QGIS 3.40+ and QGIS 4 (Qt5 and Qt6).
 Qt imports use `qgis.PyQt`, so QGIS selects its own Qt binding.
 
 Run `make package` to build `dist/raster_tracer-0.3.4.zip` from the working
-tree. Install that ZIP through QGIS's plugin manager.
+tree using ordinary Python, without QGIS or uv. It uses the checked-in
+`resources.py`; after changing resources or icons, regenerate that file with
+`make compile` (requires `pyrcc5`) before packaging. Install the ZIP through
+QGIS's plugin manager.
 
-The compatibility workflow tests the packaged plugin in isolated QGIS 3.40,
-3.44 and 4.0 containers. No QGIS installation on the host is required.
+The compatibility workflow checks lint and formatting in an independent job
+and tests the packaged plugin in isolated QGIS 3.40, 3.44 and 4.0 containers.
+No QGIS installation on the host is required.
 See [test/README.md](test/README.md) for local commands and desktop validation.
 
 Checks run after each push to `master`, or manually from the repository's
@@ -35,6 +39,41 @@ PRs and releases are not required. Results appear in Actions and on the pushed
 commit; a failed check does not undo the push. The workflow builds and tests
 the ZIP but does not publish it. For a fork, enable workflows in the Actions
 tab if GitHub has them disabled.
+
+### Python development tools
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.8.4 or
+newer and use Python 3.9+ for the separate development environment:
+
+```sh
+uv sync --locked
+make lint
+make format-check
+make format
+```
+
+`make format` rewrites Python files; the other checks fail on violations.
+To apply lint fixes, use `uv run --locked ruff check --fix .` and review the
+diff. Ruff 0.16.8 is pinned in `pyproject.toml` and `uv.lock`; CI uses uv 0.8.4
+and Python 3.13. Upgrade Ruff deliberately with
+`uv add --dev 'ruff==<reviewed-version>'`, rerun validation, and commit the
+manifest and lockfile together. Routine commands use `--locked` to reject
+stale dependency metadata.
+
+Ruff checks imports and core Python errors and formats handwritten Python at
+88 columns, targeting Python 3.9 syntax. Generated `resources.py` and built
+help are excluded, and Markdown is not formatted. Required resource imports
+carry narrow unused-import exceptions. Ruff replaces the inherited Pylint
+and pycodestyle commands; it does not reproduce Pylint's inference, docstring
+or design checks.
+
+uv manages only Ruff in `.venv`; it does not install the plugin. QGIS supplies
+Qt, GDAL and NumPy, so do not add those packages to the tooling environment or
+point `UV_PROJECT_ENVIRONMENT` at QGIS. Run the [container tests](test/README.md), or
+`make test PYTHON=/path/to/qgis/python` with a configured PyQGIS interpreter.
+Do not run `uv run make test`: its Python would be the tooling environment.
+The ZIP builder continues to use the runtime allowlist in `pb_tool.cfg`;
+the `pb_tool` application is not required.
 
 ## Profiling
 

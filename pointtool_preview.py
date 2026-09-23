@@ -2,15 +2,14 @@
 
 from typing import Any, Dict, Iterable, Optional, Tuple
 
-from qgis.PyQt.QtCore import Qt, QTimer
-from qgis.PyQt.QtGui import QColor
 from qgis.core import Qgis, QgsApplication, QgsGeometry, QgsPointXY
 from qgis.gui import QgsRubberBand
+from qgis.PyQt.QtCore import Qt, QTimer
+from qgis.PyQt.QtGui import QColor
 
 from .astar import FindPathTask
 from .exceptions import OutsideMapError
 from .line_simplification import simplify, smooth
-
 
 PreviewRequest = Dict[str, Any]
 
@@ -100,7 +99,9 @@ class TracePreviewController:
             return None
         if not self._rubber_band.isVisible():
             return None
-        if not self._request_matches_points(self._cached_request, start_point, end_point):
+        if not self._request_matches_points(
+            self._cached_request, start_point, end_point
+        ):
             return None
         if click_pos is None:
             return None
@@ -109,14 +110,16 @@ class TracePreviewController:
             return None
         dx = click_pos.x() - cached_pos[0]
         dy = click_pos.y() - cached_pos[1]
-        if (dx * dx + dy * dy) > (self._pixel_tolerance ** 2):
+        if (dx * dx + dy * dy) > (self._pixel_tolerance**2):
             return None
         return [tuple(pt) for pt in self._cached_path]
 
     def has_inflight_preview_for(self, start_point, end_point) -> bool:
         if self._request_matches_points(self._pending_request, start_point, end_point):
             return True
-        if self._task is not None and self._request_matches_points(self._last_request, start_point, end_point):
+        if self._task is not None and self._request_matches_points(
+            self._last_request, start_point, end_point
+        ):
             return True
         return False
 
@@ -149,14 +152,12 @@ class TracePreviewController:
         }
         if screen_pos is not None:
             request["screen_pos"] = (screen_pos.x(), screen_pos.y())
-        if (
-                self._pending_request is not None and
-                self._requests_equivalent(self._pending_request, request)
+        if self._pending_request is not None and self._requests_equivalent(
+            self._pending_request, request
         ):
             return
-        if (
-                self._task is None and
-                self._requests_equivalent(self._last_request, request)
+        if self._task is None and self._requests_equivalent(
+            self._last_request, request
         ):
             return
         self._pending_request = request
@@ -173,7 +174,6 @@ class TracePreviewController:
         self._timer.start(self._interval_ms)
 
     def consume_commit(self, global_path) -> None:
-        request = self._commit_request
         vlayer = self._commit_vlayer
         self._commit_request = None
         self._commit_vlayer = None
@@ -231,10 +231,9 @@ class TracePreviewController:
     def _request_matches_points(self, request, start_point, end_point) -> bool:
         if not request:
             return False
-        return (
-            tuple(request.get("start") or ()) == tuple(start_point) and
-            tuple(request.get("goal") or ()) == tuple(end_point)
-        )
+        return tuple(request.get("start") or ()) == tuple(start_point) and tuple(
+            request.get("goal") or ()
+        ) == tuple(end_point)
 
     def _execute_preview_request(self) -> None:
         if not self._enabled:
@@ -268,11 +267,12 @@ class TracePreviewController:
         current_request = dict(request)
 
         def callback(
-                path,
-                _vlayer,
-                seq=current_sequence,
-                origin=preparation["origin"],
-                req=current_request):
+            path,
+            _vlayer,
+            seq=current_sequence,
+            origin=preparation["origin"],
+            req=current_request,
+        ):
             origin_i, origin_j = origin
             self._preview_task_callback(path, origin_i, origin_j, seq, req)
 
@@ -280,16 +280,17 @@ class TracePreviewController:
         self._task = task
         QgsApplication.taskManager().addTask(task)
 
-    def _preview_task_callback(self, path, origin_i, origin_j, sequence_id, request) -> None:
+    def _preview_task_callback(
+        self, path, origin_i, origin_j, sequence_id, request
+    ) -> None:
         if sequence_id != self._sequence or not self._enabled:
             return
         self._task = None
         if not path:
             self._rubber_band.hide()
             self._cached_path = None
-            if (
-                self._commit_request is not None and
-                self._requests_equivalent(self._commit_request, request)
+            if self._commit_request is not None and self._requests_equivalent(
+                self._commit_request, request
             ):
                 self.fallback_after_failure()
             return
@@ -320,9 +321,8 @@ class TracePreviewController:
 
         if not points:
             self._rubber_band.hide()
-            if (
-                self._commit_request is not None and
-                self._requests_equivalent(self._commit_request, request)
+            if self._commit_request is not None and self._requests_equivalent(
+                self._commit_request, request
             ):
                 self.fallback_after_failure()
             return
@@ -332,8 +332,7 @@ class TracePreviewController:
         if self._enabled:
             self._rubber_band.show()
 
-        if (
-            self._commit_request is not None and
-            self._requests_equivalent(self._commit_request, request)
+        if self._commit_request is not None and self._requests_equivalent(
+            self._commit_request, request
         ):
             self.consume_commit(global_path)

@@ -8,16 +8,15 @@
 
 """
 
-__author__ = 'mkondratyev85@gmail.com'
-__date__ = '2019-11-09'
-__copyright__ = 'Copyright 2019, Mikhail Kondratyev'
+__author__ = "mkondratyev85@gmail.com"
+__date__ = "2019-11-09"
+__copyright__ = "Copyright 2019, Mikhail Kondratyev"
 
 import unittest
 
 from qgis.PyQt.QtWidgets import QDockWidget
 
 from ..raster_tracer_dockwidget import RasterTracerDockWidget
-
 from .utilities import get_qgis_app
 
 QGIS_APP = get_qgis_app()
@@ -39,8 +38,8 @@ class RasterTracerDockWidgetTest(unittest.TestCase):
         """Test we can click OK."""
         self.assertIsInstance(self.dockwidget, QDockWidget)
         self.assertTrue(self.dockwidget.checkBoxPreview.isChecked())
-        self.assertAlmostEqual(
-            self.dockwidget.previewWidthSpinBox.value(), 2.7)
+        self.assertAlmostEqual(self.dockwidget.previewWidthSpinBox.value(), 2.7)
+
 
 if __name__ == "__main__":
     unittest.main()

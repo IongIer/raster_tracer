@@ -1,37 +1,44 @@
-'''
+"""
 Main functionality of raster tracer.
-'''
+"""
 
-from enum import Enum
-from collections import namedtuple
+import math
 import os
 import time
-import math
+from collections import namedtuple
+from enum import Enum
 
 import numpy as np
-
-from qgis.core import QgsPointXY, QgsPoint, QgsGeometry, QgsFeature, \
-                      QgsVectorLayer, QgsProject, QgsApplication, \
-                      QgsRectangle, QgsSpatialIndex, QgsMessageLog, QgsCsException, \
-                      QgsFeatureRequest
-from qgis.gui import QgsMapToolEdit, \
-                     QgsRubberBand, QgsVertexMarker, QgsMapTool
+from qgis.core import (
+    Qgis,
+    QgsApplication,
+    QgsCoordinateTransform,
+    QgsCsException,
+    QgsFeature,
+    QgsFeatureRequest,
+    QgsGeometry,
+    QgsMessageLog,
+    QgsPoint,
+    QgsPointXY,
+    QgsProject,
+    QgsRectangle,
+    QgsSpatialIndex,
+    QgsVectorLayer,
+)
+from qgis.gui import QgsMapTool, QgsMapToolEdit, QgsRubberBand, QgsVertexMarker
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QColor
-from qgis.core import Qgis
-from qgis.core import QgsCoordinateTransform
-
 
 from .astar import FindPathFunction
-from .line_simplification import smooth, simplify
-from .pointtool_states import WaitingFirstPointState
 from .exceptions import OutsideMapError
+from .line_simplification import simplify, smooth
 from .pointtool_preview import TracePreviewController
 from .pointtool_raster import RasterTracingContext
+from .pointtool_states import WaitingFirstPointState
 from .pointtool_tasks import TraceTaskController
 
 # An point on the map where the user clicked along the line
-Anchor = namedtuple('Anchor', ['x', 'y', 'i', 'j'])
+Anchor = namedtuple("Anchor", ["x", "y", "i", "j"])
 
 # Flag for experimental Autofollowing mode
 ALLOW_AUTO_FOLLOWING = False
@@ -52,13 +59,13 @@ PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
 
 
 class TracingModes(Enum):
-    '''
+    """
     Possible Tracing Modes for Pointtool.
     LINE - straight line from start to end.
     DENSE_LINE - straight line densified at fixed spacing.
     PATH - tracing along color from start to end.
     AUTO - auto tracing mode along color in the given direction.
-    '''
+    """
 
     LINE = 1
     PATH = 2
@@ -66,9 +73,9 @@ class TracingModes(Enum):
     DENSE_LINE = 4
 
     def next(self):
-        '''
+        """
         Switches between LINE and PATH
-        '''
+        """
         cls = self.__class__
         members = list(cls)
 
@@ -81,15 +88,15 @@ class TracingModes(Enum):
         return members[index]
 
     def is_tracing(self):
-        '''
+        """
         Returns True if mode is PATH
-        '''
+        """
         return True if self.value == 2 else False
 
     def is_auto(self):
-        '''
+        """
         Returns True if mode is PATH
-        '''
+        """
         return True if self.value == 3 else False
 
 
@@ -99,22 +106,22 @@ RUBBERBAND_LINE_STYLES = {
     TracingModes.LINE: Qt.PenStyle.SolidLine,
     TracingModes.AUTO: Qt.PenStyle.DashDotLine,
     TracingModes.DENSE_LINE: Qt.PenStyle.SolidLine,
-    }
+}
 
 RUBBERBAND_COLORS = {
     TracingModes.PATH: QColor(255, 0, 0),
     TracingModes.LINE: QColor(255, 0, 0),
     TracingModes.AUTO: QColor(255, 0, 0),
     TracingModes.DENSE_LINE: QColor(0, 102, 255),
-    }
+}
 
 
 class PointTool(QgsMapToolEdit):
-    '''
+    """
     Implementation of interactions of the user with the main map.
     Will called every time the user clicks on the map
     or hovers the mouse over the map.
-    '''
+    """
 
     def deactivate(self):
         QgsMapTool.deactivate(self)
@@ -122,21 +129,22 @@ class PointTool(QgsMapToolEdit):
         self.deactivated.emit()
 
     def __init__(
-            self,
-            canvas,
-            iface,
-            turn_off_snap,
-            smooth=False,
-            ensure_trace_color_enabled=None,
-            set_trace_color=None):
-        '''
+        self,
+        canvas,
+        iface,
+        turn_off_snap,
+        smooth=False,
+        ensure_trace_color_enabled=None,
+        set_trace_color=None,
+    ):
+        """
         canvas - link to the QgsCanvas of the application
         iface - link to the Qgis Interface
         turn_off_snap - flag sets snapping to the nearest color
         smooth - flag sets smoothing of the traced path
         ensure_trace_color_enabled - callback enabling trace-color mode in UI
         set_trace_color - callback syncing sampled color back to UI control
-        '''
+        """
 
         self.iface = iface
 
@@ -161,8 +169,8 @@ class PointTool(QgsMapToolEdit):
         super().__init__(canvas)
 
         self.rlayer = None
-        self.snap_tolerance = None # snap to color
-        self.snap2_tolerance = None # snap to itself
+        self.snap_tolerance = None  # snap to color
+        self.snap2_tolerance = None  # snap to itself
         self.vlayer = None
         self.to_indexes = None
         self.to_coords = None
@@ -189,30 +197,27 @@ class PointTool(QgsMapToolEdit):
 
         self.last_vlayer = None
 
-    def display_message(self,
-                        title,
-                        message,
-                        level='Info',
-                        duration=2,
-                        ):
-        '''
+    def display_message(
+        self,
+        title,
+        message,
+        level="Info",
+        duration=2,
+    ):
+        """
         Shows message bar to the user.
         `level` receives one of four possible string values:
             Info, Warning, Critical, Success
-        '''
+        """
 
         LEVELS = {
-            'Info': Qgis.MessageLevel.Info,
-            'Warning': Qgis.MessageLevel.Warning,
-            'Critical': Qgis.MessageLevel.Critical,
-            'Success': Qgis.MessageLevel.Success,
+            "Info": Qgis.MessageLevel.Info,
+            "Warning": Qgis.MessageLevel.Warning,
+            "Critical": Qgis.MessageLevel.Critical,
+            "Success": Qgis.MessageLevel.Success,
         }
 
-        self.iface.messageBar().pushMessage(
-            title,
-            message,
-            LEVELS[level],
-            duration)
+        self.iface.messageBar().pushMessage(title, message, LEVELS[level], duration)
 
     def change_state(self, state):
         self.state = state(self)
@@ -235,7 +240,7 @@ class PointTool(QgsMapToolEdit):
         except (TypeError, ValueError):
             return
 
-        self.snap2_tolerance = snap_value ** 2
+        self.snap2_tolerance = snap_value**2
         # if snap_tolerance is None:
         #     self.marker_snap.hide()
         # else:
@@ -277,9 +282,8 @@ class PointTool(QgsMapToolEdit):
 
         self.task_controller.cancel()
 
-        should_pop_anchor = (
-            self._has_optimistic_anchor and
-            (was_tracking or pending_commit or task_active)
+        should_pop_anchor = self._has_optimistic_anchor and (
+            was_tracking or pending_commit or task_active
         )
         if should_pop_anchor and self.anchors:
             if self.markers:
@@ -296,7 +300,9 @@ class PointTool(QgsMapToolEdit):
         self.tracking_is_active = False
 
     def _take_preview_path_if_valid(self, start_point, end_point, click_pos):
-        return self.preview_controller.take_path_if_valid(start_point, end_point, click_pos)
+        return self.preview_controller.take_path_if_valid(
+            start_point, end_point, click_pos
+        )
 
     def _has_inflight_preview_for(self, start_point, end_point):
         return self.preview_controller.has_inflight_preview_for(start_point, end_point)
@@ -340,27 +346,26 @@ class PointTool(QgsMapToolEdit):
                 else:
                     self.display_message(
                         " ",
-                        "The active layer must be" +
-                        " a MultiLineString vector layer",
-                        level='Warning',
+                        "The active layer must be" + " a MultiLineString vector layer",
+                        level="Warning",
                         duration=2,
-                        )
+                    )
                     return None
             else:
                 self.display_message(
                     "Missing Layer",
                     "Please select vector layer to draw",
-                    level='Warning',
+                    level="Warning",
                     duration=2,
-                    )
+                )
                 return None
         except IndexError:
             self.display_message(
                 "Missing Layer",
                 "Please select vector layer to draw",
-                level='Warning',
+                level="Warning",
                 duration=2,
-                )
+            )
             return None
 
     def raster_layer_has_changed(self, raster_layer):
@@ -369,9 +374,9 @@ class PointTool(QgsMapToolEdit):
             self.display_message(
                 "Missing Layer",
                 "Please select raster layer to trace",
-                level='Warning',
+                level="Warning",
                 duration=2,
-                )
+            )
             self.raster_context.set_sampler_for_layer(None)
             return
 
@@ -384,8 +389,12 @@ class PointTool(QgsMapToolEdit):
             return
 
         if PROFILE_ENABLED:
-            total_duration = time.perf_counter() - total_start if total_start is not None else None
-            total_text = f"{total_duration:.2f}s" if total_duration is not None else "n/a"
+            total_duration = (
+                time.perf_counter() - total_start if total_start is not None else None
+            )
+            total_text = (
+                f"{total_duration:.2f}s" if total_duration is not None else "n/a"
+            )
             sampler = self.raster_context.raster_sampler
             raster_size = (
                 sampler.height if sampler else 0,
@@ -401,9 +410,9 @@ class PointTool(QgsMapToolEdit):
             )
 
     def remove_last_anchor_point(self, undo_edit=True, redraw=True):
-        '''
+        """
         Removes last anchor point and last marker point
-        '''
+        """
 
         self.clear_preview()
 
@@ -471,9 +480,9 @@ class PointTool(QgsMapToolEdit):
             self._handle_trace_color_shortcut()
 
     def add_anchor_points(self, x1, y1, i1, j1):
-        '''
+        """
         Adds anchor points and markers to self.
-        '''
+        """
 
         anchor = Anchor(x1, y1, i1, j1)
         self.anchors.append(anchor)
@@ -503,7 +512,7 @@ class PointTool(QgsMapToolEdit):
 
         try:
             i, j = self.to_indexes(x, y)
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             QgsMessageLog.logMessage(
                 "[shortcut] Ignoring 'T' – point outside raster extent",
                 "RasterTracer",
@@ -534,18 +543,14 @@ class PointTool(QgsMapToolEdit):
         return bool(self.anchors) or self.tracking_is_active
 
     def _anchor_indices(self, anchor):
-        if hasattr(anchor, 'i'):
+        if hasattr(anchor, "i"):
             return anchor.i, anchor.j
         return anchor[2], anchor[3]
 
-    def trace_over_image(self,
-                         start,
-                         goal,
-                         do_it_as_task=False,
-                         vlayer=None):
-        '''
+    def trace_over_image(self, start, goal, do_it_as_task=False, vlayer=None):
+        """
         performs tracing
-        '''
+        """
 
         preparation = self._prepare_pathfinding(start, goal, reason="trace")
 
@@ -581,12 +586,10 @@ class PointTool(QgsMapToolEdit):
                 grid_for_path,
                 local_start,
                 local_goal,
-                )
+            )
             if path is None or cost is None:
                 return None, None
-            global_path = [
-                (i + origin_i, j + origin_j) for i, j in path
-            ]
+            global_path = [(i + origin_i, j + origin_j) for i, j in path]
             return global_path, cost
 
     def _task_path_callback(self, path, vlayer, origin_i, origin_j, generation):
@@ -601,7 +604,7 @@ class PointTool(QgsMapToolEdit):
             self.display_message(
                 "No Path",
                 "Unable to find a path between the selected points.",
-                level='Warning',
+                level="Warning",
                 duration=2,
             )
             self._active_task_generation = None
@@ -612,11 +615,11 @@ class PointTool(QgsMapToolEdit):
         self.draw_path(path, vlayer)
 
     def trace(self, x1, y1, i1, j1, vlayer, click_pos=None):
-        '''
+        """
         Traces path from last point to given point.
         In case tracing is inactive just creates
         straight line.
-        '''
+        """
 
         if self.tracing_mode.is_tracing():
             if self.snap_tolerance is not None:
@@ -636,16 +639,17 @@ class PointTool(QgsMapToolEdit):
             start_point = (int(i0), int(j0))
             end_point = (int(i1), int(j1))
 
-            preview_path = self._take_preview_path_if_valid(start_point, end_point, click_pos)
+            preview_path = self._take_preview_path_if_valid(
+                start_point, end_point, click_pos
+            )
             if preview_path is not None:
                 self.tracking_is_active = True
                 self.preview_controller.clear()
                 self.draw_path(preview_path, vlayer, was_tracing=True)
                 return
 
-            if (
-                self.preview_controller.enabled and
-                self._has_inflight_preview_for(start_point, end_point)
+            if self.preview_controller.enabled and self._has_inflight_preview_for(
+                start_point, end_point
             ):
                 commit_request = {
                     "start": start_point,
@@ -659,10 +663,9 @@ class PointTool(QgsMapToolEdit):
             self.preview_controller.clear_commit()
             try:
                 self.clear_preview()
-                self.trace_over_image(start_point,
-                                      end_point,
-                                      do_it_as_task=True,
-                                      vlayer=vlayer)
+                self.trace_over_image(
+                    start_point, end_point, do_it_as_task=True, vlayer=vlayer
+                )
             except OutsideMapError:
                 pass
         else:
@@ -673,12 +676,12 @@ class PointTool(QgsMapToolEdit):
                 was_tracing=False,
                 x1=x1,
                 y1=y1,
-                )
+            )
 
     def snap_to_itself(self, x, y, sq_tolerance=1):
-        '''
+        """
         finds a nearest segment line to the current vlayer
-        '''
+        """
 
         vlayer = self.get_current_vector_layer()
         if vlayer is None:
@@ -743,7 +746,9 @@ class PointTool(QgsMapToolEdit):
         closest_fid = None
 
         for feature in vlayer.getFeatures(request):
-            closest_point, _, _, _, sq_distance = feature.geometry().closestVertex(pt_layer)
+            closest_point, _, _, _, sq_distance = feature.geometry().closestVertex(
+                pt_layer
+            )
             if sq_distance < sq_tolerance:
                 if from_layer is not None:
                     try:
@@ -778,8 +783,8 @@ class PointTool(QgsMapToolEdit):
                     )
                     return snapped_x, snapped_y
                 if (
-                        closest_sq_project is None or
-                        sq_distance_project < closest_sq_project
+                    closest_sq_project is None
+                    or sq_distance_project < closest_sq_project
                 ):
                     closest_sq_project = sq_distance_project
                     closest_sq_layer = sq_distance
@@ -821,16 +826,16 @@ class PointTool(QgsMapToolEdit):
         size = self.snap_tolerance
 
         if (
-            local_i < size or
-            local_j < size or
-            local_i + size > size_i or
-            local_j + size > size_j
+            local_i < size
+            or local_j < size
+            or local_i + size > size_i
+            or local_j + size > size_j
         ):
             raise OutsideMapError
 
         grid_small = self.raster_context.grid_changed[
-            local_i - size: local_i + size,
-            local_j - size: local_j + size,
+            local_i - size : local_i + size,
+            local_j - size : local_j + size,
         ]
 
         smallest_cells = np.where(grid_small == np.amin(grid_small))
@@ -841,17 +846,17 @@ class PointTool(QgsMapToolEdit):
         if len(offsets) == 1:
             offset_i, offset_j = offsets[0]
         else:
-            lengths = [(di ** 2 + dj ** 2) for di, dj in offsets]
+            lengths = [(di**2 + dj**2) for di, dj in offsets]
             best_index = lengths.index(min(lengths))
             offset_i, offset_j = offsets[best_index]
 
         return i + offset_i, j + offset_j
 
     def canvasReleaseEvent(self, mouseEvent):
-        '''
+        """
         Method where the actual tracing is performed
         after the user clicked on the map
-        '''
+        """
 
         vlayer = self.get_current_vector_layer()
 
@@ -862,18 +867,18 @@ class PointTool(QgsMapToolEdit):
             self.display_message(
                 "Edit mode",
                 "Please begin editing vector layer to trace",
-                level='Warning',
+                level="Warning",
                 duration=2,
-                )
+            )
             return
 
         if self.rlayer is None:
             self.display_message(
                 "Missing Layer",
                 "Please select raster layer to trace",
-                level='Warning',
+                level="Warning",
                 duration=2,
-                )
+            )
             return
 
         if mouseEvent.button() == Qt.MouseButton.RightButton:
@@ -884,11 +889,12 @@ class PointTool(QgsMapToolEdit):
         return
 
     def _build_dense_line_path(self, start_map, end_map, map_to_layer_coords):
-        '''
+        """
         Builds map and layer coordinate paths for dense line mode.
-        '''
+        """
+
         def _as_tuple(point):
-            if hasattr(point, 'x'):
+            if hasattr(point, "x"):
                 return point.x(), point.y()
             return point[0], point[1]
 
@@ -936,11 +942,10 @@ class PointTool(QgsMapToolEdit):
 
         return map_path, path_ref
 
-    def draw_path(self, path, vlayer, was_tracing=True,\
-                  x1=None, y1=None):
-        '''
+    def draw_path(self, path, vlayer, was_tracing=True, x1=None, y1=None):
+        """
         Draws a path after tracer found it.
-        '''
+        """
 
         self.preview_controller.clear()
 
@@ -949,7 +954,7 @@ class PointTool(QgsMapToolEdit):
             self.display_message(
                 "Tracing cancelled",
                 "Ignoring segment because tracing was cancelled.",
-                level='Warning',
+                level="Warning",
                 duration=2,
             )
             self.tracking_is_active = False
@@ -964,7 +969,7 @@ class PointTool(QgsMapToolEdit):
             transform = QgsCoordinateTransform(project_crs, vector_crs, project)
 
         def _as_coords(obj):
-            if hasattr(obj, 'x'):
+            if hasattr(obj, "x"):
                 return obj.x(), obj.y()
             return obj[0], obj[1]
 
@@ -993,7 +998,9 @@ class PointTool(QgsMapToolEdit):
                 return
             if map_path:
                 map_path[0] = (x0, y0)
-            path_ref = [_map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path]
+            path_ref = [
+                _map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path
+            ]
             current_last_point = QgsPointXY(*map_path[-1])
         else:
             x0, y0, _i, _j = self.anchors[-2]
@@ -1006,8 +1013,10 @@ class PointTool(QgsMapToolEdit):
                 )
             else:
                 map_path = [(x0, y0), (x1, y1)]
-                path_ref = [_map_to_layer_coords(x_coord, y_coord) for x_coord, y_coord in map_path]
-
+                path_ref = [
+                    _map_to_layer_coords(x_coord, y_coord)
+                    for x_coord, y_coord in map_path
+                ]
 
         self.ready = False
         if len(self.anchors) == 2:
@@ -1023,8 +1032,16 @@ class PointTool(QgsMapToolEdit):
             )
             vlayer.endEditCommand()
         _, _, current_last_point_i, current_last_point_j = self.anchors[-1]
-        last_x = current_last_point.x() if hasattr(current_last_point, 'x') else current_last_point[0]
-        last_y = current_last_point.y() if hasattr(current_last_point, 'y') else current_last_point[1]
+        last_x = (
+            current_last_point.x()
+            if hasattr(current_last_point, "x")
+            else current_last_point[0]
+        )
+        last_y = (
+            current_last_point.y()
+            if hasattr(current_last_point, "y")
+            else current_last_point[1]
+        )
         self.anchors[-1] = Anchor(
             last_x,
             last_y,
@@ -1034,7 +1051,6 @@ class PointTool(QgsMapToolEdit):
         self.redraw()
         self.tracking_is_active = False
         self._has_optimistic_anchor = False
-
 
     def update_rubber_band(self):
         # this is very ugly but I can't make another way
@@ -1069,13 +1085,13 @@ class PointTool(QgsMapToolEdit):
         self.rubber_band.setToGeometry(
             QgsGeometry.fromPolyline(points),
             self.vlayer,
-            )
+        )
 
     def canvasMoveEvent(self, mouseEvent):
-        '''
+        """
         Store the mouse position for the correct
         updating of the rubber band
-        '''
+        """
 
         # we need at least one point to draw
         if not self.anchors:
@@ -1090,7 +1106,7 @@ class PointTool(QgsMapToolEdit):
         if self.tracing_mode.is_tracing() and self.to_indexes is not None:
             try:
                 base_i, base_j = self.to_indexes(x1, y1)
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 base_i = None
                 base_j = None
 
@@ -1106,14 +1122,18 @@ class PointTool(QgsMapToolEdit):
                         return
                     snap_point = self.to_coords(target_i, target_j)
                     marker_x, marker_y = (
-                        snap_point.x(), snap_point.y()
-                    ) if hasattr(snap_point, 'x') else (snap_point[0], snap_point[1])
+                        (snap_point.x(), snap_point.y())
+                        if hasattr(snap_point, "x")
+                        else (snap_point[0], snap_point[1])
+                    )
                 if self.snap2_tolerance is not None:
-                    snapped_x, snapped_y = self.snap_to_itself(marker_x, marker_y, self.snap2_tolerance)
+                    snapped_x, snapped_y = self.snap_to_itself(
+                        marker_x, marker_y, self.snap2_tolerance
+                    )
                     marker_x, marker_y = snapped_x, snapped_y
                     try:
                         target_i, target_j = self.to_indexes(marker_x, marker_y)
-                    except Exception:  # pylint: disable=broad-except
+                    except Exception:
                         self.marker_snap.hide()
                         self.clear_preview()
                         return
@@ -1133,8 +1153,12 @@ class PointTool(QgsMapToolEdit):
         self.update_rubber_band()
         self.redraw()
 
-        if (self.preview_controller.enabled and self.tracing_mode.is_tracing() and
-                preview_goal is not None and len(self.anchors) >= 1):
+        if (
+            self.preview_controller.enabled
+            and self.tracing_mode.is_tracing()
+            and preview_goal is not None
+            and len(self.anchors) >= 1
+        ):
             start_anchor = self.anchors[-1]
             start = self._anchor_indices(start_anchor)
             self._queue_preview(start, preview_goal, mouseEvent.pos())
@@ -1142,10 +1166,10 @@ class PointTool(QgsMapToolEdit):
             self.clear_preview()
 
     def abort_tracing_process(self):
-        '''
+        """
         Terminate background process of tracing raster
         after the user hits Esc.
-        '''
+        """
 
         self.clear_preview()
 
@@ -1177,9 +1201,9 @@ class PointTool(QgsMapToolEdit):
         QgsApplication.processEvents()
 
     def pan(self, x, y):
-        '''
+        """
         Move the canvas to the x, y position
-        '''
+        """
         currExt = self.iface.mapCanvas().extent()
         canvasCenter = currExt.center()
         dx = x - canvasCenter.x()
@@ -1192,33 +1216,33 @@ class PointTool(QgsMapToolEdit):
         self.iface.mapCanvas().setExtent(newRect)
 
     def add_last_feature_to_spindex(self, vlayer):
-        '''
+        """
         Adds last feature to spatial index
-        '''
+        """
         features = list(vlayer.getFeatures())
         last_feature = features[-1]
         self.spIndex.insertFeature(last_feature)
 
     def create_spatial_index_for_vlayer(self, vlayer):
-        '''
+        """
         Creates spatial index for the vlayer
-        '''
+        """
 
         self.spIndex = QgsSpatialIndex()
         # features = [f for f in vlayer]
         self.spIndex.addFeatures(vlayer.getFeatures())
 
 
-
 def add_to_last_feature(vlayer, points, fid):
-    '''
+    """
     Adds points to the target line feature in the vlayer identified by fid.
     vlayer - QgsLayer of type MultiLine string
     points - list of points
     fid - id of the feature to update
-    '''
+    """
+
     def _as_qgs_point_xy(point):
-        if hasattr(point, 'x') and hasattr(point, 'y'):
+        if hasattr(point, "x") and hasattr(point, "y"):
             return QgsPointXY(point.x(), point.y())
         x, y = point
         return QgsPointXY(x, y)
@@ -1254,9 +1278,9 @@ def add_to_last_feature(vlayer, points, fid):
 
 
 def add_feature_to_vlayer(vlayer, points):
-    '''
+    """
     Adds new line feature to the vlayer and returns the assigned feature id.
-    '''
+    """
 
     feat = QgsFeature(vlayer.fields())
     polyline = [QgsPoint(x, y) for x, y in points]

@@ -27,12 +27,12 @@ import os
 from qgis.PyQt import QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal
 
-FORM_CLASS, _ = uic.loadUiType(os.path.join(
-    os.path.dirname(__file__), 'raster_tracer_dockwidget_base.ui'))
+FORM_CLASS, _ = uic.loadUiType(
+    os.path.join(os.path.dirname(__file__), "raster_tracer_dockwidget_base.ui")
+)
 
 
 class RasterTracerDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
-
     closingPlugin = pyqtSignal()
 
     def __init__(self, parent=None):

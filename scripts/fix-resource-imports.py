@@ -1,8 +1,7 @@
 """Keep pyrcc5 output usable with the Qt binding selected by QGIS."""
 
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 path = Path(sys.argv[1])
 source = path.read_text(encoding="utf-8")

@@ -1,9 +1,9 @@
 """Small QgsInterface substitute backed by real QGIS and Qt widgets."""
 
-from qgis.PyQt.QtCore import QObject
-from qgis.PyQt.QtWidgets import QMenu, QToolBar
 from qgis.core import QgsLayerTreeModel, QgsProject
 from qgis.gui import QgsLayerTreeView, QgsMessageBar
+from qgis.PyQt.QtCore import QObject
+from qgis.PyQt.QtWidgets import QMenu, QToolBar
 
 
 class QgisInterface(QObject):
@@ -14,12 +14,11 @@ class QgisInterface(QObject):
         self.canvas = canvas
         self.window = window
         self.tree = QgsLayerTreeView(window)
-        self.model = QgsLayerTreeModel(
-            QgsProject.instance().layerTreeRoot(), self.tree)
+        self.model = QgsLayerTreeModel(QgsProject.instance().layerTreeRoot(), self.tree)
         self.tree.setModel(self.model)
         self.messages = QgsMessageBar(window)
         self.menu = QMenu(window)
-        self.menu.addAction('Undo', self._undo)
+        self.menu.addAction("Undo", self._undo)
 
     def _undo(self):
         layer = self.activeLayer()
