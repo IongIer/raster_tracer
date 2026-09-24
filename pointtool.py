@@ -60,7 +60,7 @@ class TracingModes(Enum):
         return self == TracingModes.PATH
 
 
-class PointTool(QgsMapToolEdit):
+class RasterScribePointTool(QgsMapToolEdit):
     def __init__(
         self,
         canvas,
@@ -878,7 +878,7 @@ class PointTool(QgsMapToolEdit):
         ], result.cost
 
     def tr(self, message):
-        return QCoreApplication.translate("PointTool", message)
+        return QCoreApplication.translate("RasterScribePointTool", message)
 
     def report_failure(self, status, detail=""):
         if self.disposed or status == "cancelled":
@@ -896,7 +896,7 @@ class PointTool(QgsMapToolEdit):
                 "Unable to finish the segment. Previous geometry has been preserved."
             )
         self.iface.messageBar().pushMessage(
-            self.tr("RasterTracer"), message, Qgis.MessageLevel.Warning, 3
+            self.tr("Raster Scribe"), message, Qgis.MessageLevel.Warning, 3
         )
         if detail:
-            QgsMessageLog.logMessage(detail, "RasterTracer", Qgis.MessageLevel.Warning)
+            QgsMessageLog.logMessage(detail, "Raster Scribe", Qgis.MessageLevel.Warning)

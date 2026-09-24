@@ -146,7 +146,7 @@ class RasterPipelineTest(unittest.TestCase):
         work = WorkerRequest(1, source, (0, 6, 0, 6), (1, 1), (1, 4), (0, 0, 0), False)
         snapshot, cost, valid, _ = prepare_snapshot(work, None, lambda: False)
         with patch(
-            "raster_tracer.pointtool_raster.read_rgb",
+            "raster_scribe.pointtool_raster.read_rgb",
             side_effect=AssertionError("unexpected read"),
         ):
             reused, same, _, timings = prepare_snapshot(work, snapshot, lambda: False)
@@ -173,7 +173,7 @@ class RasterPipelineTest(unittest.TestCase):
             replace(work, color=None), changed, lambda: False
         )
         self.assertEqual(automatic.cost_key[1], (10, 10, 10))
-        with patch("raster_tracer.pointtool_raster.read_rgb", wraps=read_rgb) as reader:
+        with patch("raster_scribe.pointtool_raster.read_rgb", wraps=read_rgb) as reader:
             prepare_snapshot(
                 replace(work, source=replace(source, revision=2)),
                 snapshot,
@@ -191,7 +191,7 @@ class RasterPipelineTest(unittest.TestCase):
             1, source, (0, 4000, 0, 4000), (0, 0), (3999, 3999), None, False
         )
         with patch(
-            "raster_tracer.pointtool_raster.gdal.OpenEx",
+            "raster_scribe.pointtool_raster.gdal.OpenEx",
             side_effect=AssertionError("must reject first"),
         ):
             self.assertEqual(execute_request(work).status, "resource_limit")
@@ -213,7 +213,7 @@ class EndpointTest(TraceFixture):
         self.assertEqual(self.tool.snap_to_itself(1000, 1991, 3), (1001, 1991))
         self.assertEqual(self.tool.snap_to_itself(1000, 1991, 1), (1001, 1991))
         with patch(
-            "raster_tracer.pointtool.QgsCoordinateTransform",
+            "raster_scribe.pointtool.QgsCoordinateTransform",
             side_effect=ValueError("bad transform"),
         ):
             self.assertEqual(self.tool.snap_to_itself(1000, 1991, 3), (1000, 1991))
@@ -255,7 +255,7 @@ class EndpointTest(TraceFixture):
             self.tool.snap_tolerance_changed(100)
 
     def test_t_small_reads_and_reject_unsupported_mapping(self):
-        with patch("raster_tracer.pointtool_raster.read_rgb", wraps=read_rgb) as reader:
+        with patch("raster_scribe.pointtool_raster.read_rgb", wraps=read_rgb) as reader:
             self.tool.raster_context.sample_color_at_indices(8, 8)
             self.tool.raster_context.sample_color_at_indices(8, 8)
             self.assertEqual(reader.call_count, 1)

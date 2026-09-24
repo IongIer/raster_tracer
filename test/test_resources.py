@@ -22,20 +22,12 @@ from .utilities import get_qgis_app
 QGIS_APP = get_qgis_app()
 
 
-class RasterTracerDialogTest(unittest.TestCase):
-    """Test rerources work."""
-
-    def setUp(self):
-        """Runs before each test."""
-        pass
-
-    def tearDown(self):
-        """Runs after each test."""
-        pass
+class RasterScribeResourcesTest(unittest.TestCase):
+    """Check the plugin's registered Qt resources."""
 
     def test_icon_png(self):
-        """Test we can click OK."""
-        path = ":/plugins/raster_tracer/icon.png"
+        """The plugin icon loads and renders from its resource path."""
+        path = ":/plugins/raster_scribe/icon.png"
         icon = QIcon(path)
         self.assertFalse(icon.isNull())
         self.assertFalse(icon.pixmap(24, 24).isNull())

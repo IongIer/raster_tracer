@@ -16,26 +16,24 @@ import unittest
 
 from qgis.PyQt.QtWidgets import QDockWidget
 
-from ..raster_tracer_dockwidget import RasterTracerDockWidget
+from ..raster_scribe_dockwidget import RasterScribeDockWidget
 from .utilities import get_qgis_app
 
 QGIS_APP = get_qgis_app()
 
 
-class RasterTracerDockWidgetTest(unittest.TestCase):
-    """Test dockwidget works."""
+class RasterScribeDockWidgetTest(unittest.TestCase):
+    """Check that the dock loads with the expected defaults."""
 
     def setUp(self):
-        """Runs before each test."""
-        self.dockwidget = RasterTracerDockWidget(None)
+        self.dockwidget = RasterScribeDockWidget(None)
 
     def tearDown(self):
-        """Runs after each test."""
         self.dockwidget.deleteLater()
         self.dockwidget = None
 
-    def test_dockwidget_ok(self):
-        """Test we can click OK."""
+    def test_preview_defaults(self):
+        """The dock starts with previews enabled and the default line width."""
         self.assertIsInstance(self.dockwidget, QDockWidget)
         self.assertTrue(self.dockwidget.checkBoxPreview.isChecked())
         self.assertAlmostEqual(self.dockwidget.previewWidthSpinBox.value(), 2.7)

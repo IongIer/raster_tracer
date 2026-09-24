@@ -35,7 +35,7 @@ def main():
     faulthandler.enable()
     # A broken task or modal dialog must fail CI instead of hanging forever.
     faulthandler.dump_traceback_later(180, exit=True)
-    with tempfile.TemporaryDirectory(prefix="raster-tracer-tests-") as temp:
+    with tempfile.TemporaryDirectory(prefix="raster-scribe-tests-") as temp:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         os.environ["XDG_CONFIG_HOME"] = str(Path(temp) / "config")
         os.environ["XDG_DATA_HOME"] = str(Path(temp) / "data")
@@ -63,11 +63,11 @@ def main():
         if args.plugin_zip:
             with zipfile.ZipFile(args.plugin_zip) as archive:
                 archive.extractall(Path(temp) / "plugin")
-            plugin_root = Path(temp) / "plugin" / "raster_tracer"
-        load_package("raster_tracer", plugin_root)
-        load_package("raster_tracer.test", root / "test")
+            plugin_root = Path(temp) / "plugin" / "raster_scribe"
+        load_package("raster_scribe", plugin_root)
+        load_package("raster_scribe.test", root / "test")
         tests = [
-            f"raster_tracer.test.{path.stem}"
+            f"raster_scribe.test.{path.stem}"
             for path in sorted(
                 (root / "test").glob("test_core.py" if args.core_only else "test_*.py")
             )
@@ -75,7 +75,7 @@ def main():
         suite = unittest.defaultTestLoader.loadTestsFromNames(tests)
         result = unittest.TextTestRunner(verbosity=2, failfast=args.failfast).run(suite)
         if not args.core_only:
-            from raster_tracer.test.utilities import stop_qgis_widgets
+            from raster_scribe.test.utilities import stop_qgis_widgets
 
             stop_qgis_widgets()
         faulthandler.cancel_dump_traceback_later()

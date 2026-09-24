@@ -56,10 +56,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Package the plugin
-        run: python3 scripts/package-plugin.py --output /tmp/raster-tracer.zip
+        run: python3 scripts/package-plugin.py --output /tmp/raster-scribe.zip
       - name: Test the installable ZIP
         run: >-
           python3 scripts/run-tests.py
-          --plugin-zip /tmp/raster-tracer.zip
+          --plugin-zip /tmp/raster-scribe.zip
           --expected-qgis '${{ matrix.qgis }}'
           --expected-qt-major '${{ matrix.qt }}'

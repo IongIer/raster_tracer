@@ -7,7 +7,7 @@ from qgis.PyQt.QtWidgets import QMenu, QToolBar
 
 
 class QgisInterface(QObject):
-    """Implement the interface methods used by Raster Tracer."""
+    """Implement the interface methods used by Raster Scribe."""
 
     def __init__(self, canvas, window):
         super().__init__(window)
@@ -47,6 +47,12 @@ class QgisInterface(QObject):
         self.window.menuBar().addAction(action)
 
     def removePluginMenu(self, name, action):
+        self.window.menuBar().removeAction(action)
+
+    def addPluginToRasterMenu(self, name, action):
+        self.window.menuBar().addAction(action)
+
+    def removePluginRasterMenu(self, name, action):
         self.window.menuBar().removeAction(action)
 
     def removeToolBarIcon(self, action):

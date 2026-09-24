@@ -1,12 +1,12 @@
 #!/bin/bash
-LRELEASE=$1
-LOCALES=$2
+set -euo pipefail
+LRELEASE=${1:-lrelease}
+LOCALES=${2:-}
 
+cd "$(dirname "$0")/.."
 
 for LOCALE in ${LOCALES}
 do
     echo "Processing: ${LOCALE}.ts"
-    # Note we don't use pylupdate with qt .pro file approach as it is flakey
-    # about what is made available.
-    $LRELEASE i18n/${LOCALE}.ts
+    "$LRELEASE" "i18n/${LOCALE}.ts"
 done

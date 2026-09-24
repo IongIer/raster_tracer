@@ -217,7 +217,7 @@ class TracingHardeningTest(TraceFixture):
             request.worker_input(), None, lambda task, result: outcomes.append(result)
         )
         with patch(
-            "raster_tracer.pointtool_tasks.execute_request",
+            "raster_scribe.pointtool_tasks.execute_request",
             side_effect=RuntimeError("preparation error"),
         ):
             self.assertFalse(task.run())
@@ -587,7 +587,7 @@ class TracingHardeningTest(TraceFixture):
             ("trace/smooth", "bad"),
             ("color/value", "bad"),
         ]:
-            settings.setValue("RasterTracer/" + key, value)
+            settings.setValue("RasterScribe/" + key, value)
         self.plugin.run()
         self.tool = self.plugin.tool_identify
         self.assertTrue(self.tool.smooth_line)
@@ -618,7 +618,7 @@ class WorkerThreadTest(TraceFixture):
                 raise RuntimeError("test barrier timed out")
             return read_rgb(*args)
 
-        with patch("raster_tracer.pointtool_raster.read_rgb", side_effect=blocked):
+        with patch("raster_scribe.pointtool_raster.read_rgb", side_effect=blocked):
             try:
                 self.add_anchors()
                 wait_until(entered.is_set)
@@ -649,7 +649,7 @@ class WorkerThreadTest(TraceFixture):
                 raise RuntimeError("test barrier timed out")
             return read_rgb(dataset, *args)
 
-        with patch("raster_tracer.pointtool_raster.read_rgb", side_effect=blocked):
+        with patch("raster_scribe.pointtool_raster.read_rgb", side_effect=blocked):
             try:
                 self.add_anchors()
                 wait_until(entered.is_set)

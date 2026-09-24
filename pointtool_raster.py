@@ -275,11 +275,11 @@ class RasterTracingContext:
             sampler.to_indexes,
             sampler.to_coords,
         )
-        if os.environ.get("RASTER_TRACER_PROFILE", "0") == "1":
+        if os.environ.get("RASTER_SCRIBE_PROFILE", "0") == "1":
             QgsMessageLog.logMessage(
                 f"[profiling] sampler reason={reason} duration={time.perf_counter() - started:.6f}s "
                 f"shape=({sampler.height},{sampler.width})",
-                "RasterTracer",
+                "Raster Scribe",
                 Qgis.MessageLevel.Info,
             )
         return True

@@ -7,6 +7,8 @@ if [ "$#" -eq 0 ]; then
 fi
 
 cd "$(dirname "$0")/.."
+mkdir -p i18n
+PYLUPDATE=${PYLUPDATE:-pylupdate5}
 
 # Use the runtime manifest so environments, tests and builds are never scanned.
 # Generated resources.py contains no translatable source strings.
@@ -19,7 +21,6 @@ with open("pb_tool.cfg") as manifest:
 files = config["files"]
 names = set(files["python_files"].split())
 names.update(files["main_dialog"].split())
-names.update(files["compiled_ui_files"].split())
 names.discard("resources.py")
 print("\n".join(sorted(names)))
 PY
@@ -55,8 +56,7 @@ if [ "$UPDATE" = true ]; then
   echo "Please provide translations by editing the translation files below:"
   for LOCALE in "$@"; do
     echo "i18n/$LOCALE.ts"
-    # This legacy collector still requires pylupdate4; see test/README.md.
-    pylupdate4 -noobsolete "${PYTHON_FILES[@]}" -ts "i18n/$LOCALE.ts"
+    "$PYLUPDATE" -noobsolete "${PYTHON_FILES[@]}" -ts "i18n/$LOCALE.ts"
   done
 else
   echo "No source files have changed since the last translation update."

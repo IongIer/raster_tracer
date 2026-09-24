@@ -1,5 +1,5 @@
 <RCC>
-    <qresource prefix="/plugins/raster_tracer" >
+    <qresource prefix="/plugins/raster_scribe" >
         <file>icon.png</file>
     </qresource>
 </RCC>

@@ -21,7 +21,7 @@ from .line_simplification import simplify, smooth
 from .pointtool_raster import check_cancel, prepare_snapshot, validate_budget
 from .pointtool_session import TraceResult
 
-PROFILE_ENABLED = os.environ.get("RASTER_TRACER_PROFILE", "0") == "1"
+PROFILE_ENABLED = os.environ.get("RASTER_SCRIBE_PROFILE", "0") == "1"
 
 
 def execute_request(work, snapshot=None, cancel=lambda: False):
@@ -65,7 +65,7 @@ def execute_request(work, snapshot=None, cancel=lambda: False):
 
 class FindPathTask(QgsTask):
     def __init__(self, work, snapshot, callback):
-        super().__init__("RasterTracer", QgsTask.Flag.CanCancel)
+        super().__init__("Raster Scribe", QgsTask.Flag.CanCancel)
         self.work = work
         self.snapshot = snapshot
         self.callback = callback
@@ -110,7 +110,7 @@ class FindPathTask(QgsTask):
         if PROFILE_ENABLED:
             QgsMessageLog.logMessage(
                 f"[profiling] {outcome.timings}\n{self.profile}",
-                "RasterTracer",
+                "Raster Scribe",
                 Qgis.MessageLevel.Info,
             )
         callback(self, outcome)

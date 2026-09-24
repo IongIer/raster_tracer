@@ -23,13 +23,29 @@ from .utilities import wait_until
 
 
 class CompatibilityTest(TraceFixture):
+    def test_preferences_are_separate_from_raster_tracer(self):
+        settings = QSettings()
+        settings.setValue("RasterTracer/preview/enabled", False)
+        settings.setValue("RasterTracer/color/value", "#ff123456")
+        self.plugin.dockwidget.close()
+        settings.remove("RasterScribe")
+        self.plugin.run()
+        self.tool = self.plugin.tool_identify
+        self.tools.append(self.tool)
+        self.assertTrue(self.plugin.dockwidget.checkBoxPreview.isChecked())
+        self.assertFalse(self.plugin.dockwidget.checkBoxColor.isChecked())
+        self.plugin.set_trace_color_from_tool(QColor("#abcdef"))
+        self.assertEqual(settings.value("RasterTracer/color/value"), "#ff123456")
+        self.assertFalse(settings.value("RasterTracer/preview/enabled", type=bool))
+        self.assertEqual(settings.value("RasterScribe/color/value"), "#ffabcdef")
+
     def test_start_close_and_reopen(self):
         self.assertTrue(self.plugin.pluginIsActive)
         self.assertIs(self.canvas.mapTool(), self.tool)
         self.assertFalse(self.plugin.actions[0].icon().pixmap(24, 24).isNull())
         self.assertIs(self.tool.get_current_vector_layer(), self.vector)
         self.plugin.preview_color_changed(QColor("#80402010"))
-        self.assertEqual(QSettings().value("RasterTracer/preview/color"), "#80402010")
+        self.assertEqual(QSettings().value("RasterScribe/preview/color"), "#80402010")
         dock = self.plugin.dockwidget
         dock.close()
         self.assertFalse(self.plugin.pluginIsActive)
@@ -127,7 +143,7 @@ class CompatibilityTest(TraceFixture):
         self.plugin.set_trace_color_from_tool(QColor("black"))
         self.tool.snap_tolerance_changed(3)
         self.assertEqual(self.tool.snap(7, 8), (8, 8))
-        self.assertEqual(QSettings().value("RasterTracer/color/value"), "#ff000000")
+        self.assertEqual(QSettings().value("RasterScribe/color/value"), "#ff000000")
 
     def test_keyboard_filter(self):
         self.accept(8, 2)
