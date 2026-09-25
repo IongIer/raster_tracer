@@ -44,7 +44,11 @@ class RasterScribeDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # http://doc.qt.io/qt-5/designer-using-a-ui-file.html
         # #widgets-and-dialogs-with-auto-connect
         self.setupUi(self)
+        self.can_close = None
 
     def closeEvent(self, event):
+        if self.can_close is not None and not self.can_close():
+            event.ignore()
+            return
         self.closingPlugin.emit()
         event.accept()

@@ -119,12 +119,11 @@ class GeometryAppendIntegrationTest(TraceFixture):
         self.tool.tracing_mode = TracingModes.LINE
         self.tool.accept_click((999, 1990))
         self.tool.accept_click((1010, 1990))
-        fid = self.tool.current_feature_id
-        first = self.vector.getFeature(fid).geometry()
+        first = QgsGeometry(self.tool.session.geometry)
         first_wkb = bytes(first.asWkb())
         first.boundingBox()
         self.tool.accept_click((1021, 1990))
-        second = self.vector.getFeature(fid).geometry()
+        second = QgsGeometry(self.tool.session.geometry)
         second_wkb = bytes(second.asWkb())
         self.assertEqual(bytes(first.asWkb()), first_wkb)
         self.assertEqual(
@@ -132,18 +131,15 @@ class GeometryAppendIntegrationTest(TraceFixture):
             [(999, 1990), (1010, 1990), (1021, 1990)],
         )
         self.tool.remove_last_anchor_point()
-        self.assertEqual(
-            bytes(self.vector.getFeature(fid).geometry().asWkb()), first_wkb
-        )
+        self.assertEqual(bytes(self.tool.session.geometry.asWkb()), first_wkb)
         self.assertEqual(bytes(second.asWkb()), second_wkb)
         self.tool.accept_click((1021, 1990))
-        self.assertEqual(
-            bytes(self.vector.getFeature(fid).geometry().asWkb()), second_wkb
-        )
+        self.assertEqual(bytes(self.tool.session.geometry.asWkb()), second_wkb)
+        self.assertEqual(self.vector.featureCount(), 0)
+        self.tool.finish_session()
+        fid = next(self.vector.getFeatures()).id()
         self.vector.undoStack().undo()
-        self.assertEqual(
-            bytes(self.vector.getFeature(fid).geometry().asWkb()), first_wkb
-        )
+        self.assertEqual(self.vector.featureCount(), 0)
         self.vector.undoStack().redo()
         self.assertEqual(
             bytes(self.vector.getFeature(fid).geometry().asWkb()), second_wkb

@@ -79,14 +79,16 @@ plugin's translations.
 
 Use a clean profile for QGIS 3 and QGIS 4. Install the ZIP and copy the
 [example project](../documentation/example/) to a writable location.
-These checks cover desktop behavior that the automated suite cannot establish.
+Check the desktop workflow and appearance as well as the automated results.
 
 | Action | Expected result |
 | --- | --- |
 | Follow [Trace your first line](../documentation/usage.md#trace-your-first-line), including enabling editing | The line follows the raster, matches the preview, and stays after finishing. |
 | Use `A`, `D`, `T`, and `S`; repeat with Layers-panel focus during a trace | Modes, sampled color, and color snapping change as described in the usage guide. |
 | Press Escape during a long trace; start another | Earlier segments remain and the new trace can finish. |
-| Press `B` during pending work, then after a completed segment | Pending work cancels; the last tracing edit can be undone. |
+| Press `B` during pending work, then after an accepted segment | Pending work cancels; the last draft segment can be removed. |
+| Finish a multi-segment line, then use QGIS Undo/Redo | The whole finished line disappears and returns as one edit. |
+| Pan and zoom while tracing, then snap back to the draft | The draft stays visible and its vertices remain available for snapping. |
 | Enable both snapping options and smoothing | The endpoint joins the intended vertex; preview and saved geometry agree. |
 | Change the raster, vector layer, or CRS during a trace | Earlier geometry remains and a late result does not add another segment. |
 | Close and reopen the dock during a trace; unload while work is pending | The dock and tool close without a crash or stray result. |

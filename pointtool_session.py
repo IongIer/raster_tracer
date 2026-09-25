@@ -79,7 +79,6 @@ class TraceRequest:
     start: ResolvedEndpoint
     goal: ResolvedEndpoint
     target_id: str
-    feature_id: Optional[int]
     mode: str
     smoothing: bool
     color: Optional[tuple]
@@ -96,7 +95,6 @@ class TraceRequest:
             self.start.pixel,
             self.goal.pixel,
             self.target_id,
-            self.feature_id,
             self.mode,
             self.smoothing,
             self.color,
@@ -134,22 +132,15 @@ class PendingSegment:
     adopted_preview: bool = False
 
 
-@dataclass(frozen=True)
-class UndoRecord:
-    index: int
-    command: object
-    previous_feature_id: Optional[int]
-
-
 class TraceSession:
     def __init__(self):
         self.session_id = new_id()
         self.revision = 0
         self.target_id = None
-        self.feature_id = None
+        self.geometry = None
         self.anchors = []
         self.pending = None
-        self.undo_records = []
+        self.segment_vertices = []
 
     def invalidate(self):
         self.revision += 1
@@ -159,9 +150,9 @@ class TraceSession:
         self.invalidate()
         self.session_id = new_id()
         self.target_id = None
-        self.feature_id = None
+        self.geometry = None
         self.anchors.clear()
-        self.undo_records.clear()
+        self.segment_vertices.clear()
 
     def bind(self, target_id, anchor):
         self.target_id = target_id
@@ -177,7 +168,6 @@ class TraceSession:
             request.session_id == self.session_id
             and request.revision == self.revision
             and request.target_id == self.target_id
-            and request.feature_id == self.feature_id
         )
 
     def finish(self, request_id):
@@ -186,15 +176,17 @@ class TraceSession:
             return True
         return False
 
-    def accept(self, request, feature_id, undo_record):
+    def accept(self, request, geometry, previous_vertices):
         if not self.finish(request.request_id):
             return False
-        self.feature_id = feature_id
+        self.geometry = geometry
         self.anchors.append(request.goal)
-        self.undo_records.append(undo_record)
+        self.segment_vertices.append(previous_vertices)
+        self.revision += 1
         return True
 
-    def undo(self):
-        record = self.undo_records.pop()
+    def undo(self, geometry):
+        self.segment_vertices.pop()
         self.anchors.pop()
-        self.feature_id = record.previous_feature_id
+        self.geometry = geometry
+        self.revision += 1

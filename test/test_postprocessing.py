@@ -144,11 +144,11 @@ class WorkerPostprocessTest(TraceFixture):
         rendered = self.tool.preview_controller._rubber_band.asGeometry()
         preview_points = [QgsPointXY(vertex) for vertex in rendered.vertices()]
         self.tool.accept_click(endpoint.xy, screen)
-        committed = (
-            self.vector.getFeature(self.tool.current_feature_id)
-            .geometry()
-            .asMultiPolyline()[0]
-        )
+        draft = self.tool.session.geometry.asMultiPolyline()[0]
+        self.assertEqual(draft, preview_points)
+        self.assertEqual(self.vector.featureCount(), 0)
+        self.assertTrue(self.tool.finish_session())
+        committed = next(self.vector.getFeatures()).geometry().asMultiPolyline()[0]
         self.assertEqual(committed, preview_points)
         self.assertEqual((committed[-1].x(), committed[-1].y()), endpoint.xy)
         self.assertEqual(len(submitted), 1)

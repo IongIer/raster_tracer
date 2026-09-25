@@ -239,7 +239,9 @@ class RasterScribe:
 
     def _shutdown(self):
         if not self.pluginIsActive:
-            return
+            return True
+        if not self.tool_identify.finish_session():
+            return False
         self.pluginIsActive = False
         RasterScribePointTool._disconnect(self._connections)
         if self.layer_tree_filter is not None:
@@ -257,14 +259,21 @@ class RasterScribe:
         tool.deleteLater()
         dock, self.dockwidget = self.dockwidget, None
         if dock is not None:
+            dock.can_close = None
             dock.hide()
             self.iface.mainWindow().removeDockWidget(dock)
             dock.deleteLater()
+        return True
 
     def unload(self):
         if self._unloaded:
             return
-        self._shutdown()
+        if not self._shutdown():
+            # QGIS unregisters the plugin after any normal return from unload.
+            # An exception keeps it registered so the accepted draft can be saved.
+            raise RuntimeError(
+                "Cannot unload Raster Scribe while its draft could not be saved"
+            )
         self.task_controller.shutdown()
         self._unloaded = True
         for action in self.actions:
@@ -297,6 +306,7 @@ class RasterScribe:
             set_trace_color=self.set_trace_color_from_tool,
             scheduler=self.task_controller,
         )
+        self.dockwidget.can_close = self.tool_identify.finish_session
 
     def _read_preferences(self):
         settings, dock = QSettings(), self.dockwidget

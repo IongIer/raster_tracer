@@ -85,7 +85,9 @@ class TracingHardeningTest(TraceFixture):
                     self.accept(8, 2)
                 previous = (
                     self.vector.featureCount(),
-                    self.tool.current_feature_id,
+                    bytes(self.tool.session.geometry.asWkb())
+                    if self.tool.session.geometry is not None
+                    else None,
                     self.tool.anchors,
                 )
                 self.accept(8, 12)
@@ -98,7 +100,12 @@ class TracingHardeningTest(TraceFixture):
                 self.assertIs(self.scheduler._task, old)
                 old.finish()  # Force stale success even though cancel was requested.
                 self.assertEqual(
-                    (self.vector.featureCount(), self.tool.current_feature_id),
+                    (
+                        self.vector.featureCount(),
+                        bytes(self.tool.session.geometry.asWkb())
+                        if self.tool.session.geometry is not None
+                        else None,
+                    ),
                     previous[:2],
                 )
                 self.assertTrue(self.tool.tracking_is_active)
@@ -118,7 +125,8 @@ class TracingHardeningTest(TraceFixture):
             self.assertIs(self.scheduler._task, task)
             before = self.vector.featureCount()
             task.finish()
-            self.assertEqual(self.vector.featureCount(), before + 1)
+            self.assertEqual(self.vector.featureCount(), before)
+            self.assertIsNotNone(self.tool.session.geometry)
             self.assertEqual(self.tool.anchors[-1], endpoint)
 
     def test_return_to_running_or_cached_preview_discards_pending_hover(self):
@@ -192,7 +200,8 @@ class TracingHardeningTest(TraceFixture):
                 self.assertFalse(self.scheduler.active)
         self.accept(8, 13)
         self.submitted[-1].finish()
-        self.assertEqual(self.vector.featureCount(), 1)
+        self.assertEqual(self.vector.featureCount(), 0)
+        self.assertIsNotNone(self.tool.session.geometry)
 
     def test_task_adapter_reports_false_exception_and_cancel_once(self):
         self.accept(8, 2)
@@ -252,7 +261,8 @@ class TracingHardeningTest(TraceFixture):
                     old.finish()
                 if self.scheduler.active:
                     self.submitted[-1].finish()
-                self.assertEqual(self.vector.featureCount(), before + 1)
+                self.assertEqual(self.vector.featureCount(), before)
+                self.assertIsNotNone(self.tool.session.geometry)
                 self.assertFalse(self.tool.tracking_is_active)
 
     def test_preview_disable_and_presentation_changes(self):
@@ -276,7 +286,8 @@ class TracingHardeningTest(TraceFixture):
         self.assertEqual(self.tool.session.revision, revision)
         self.assertEqual(self.tool.session.pending.request.request_id, request_id)
         self.submitted[-1].finish()
-        self.assertEqual(self.vector.featureCount(), 1)
+        self.assertEqual(self.vector.featureCount(), 0)
+        self.assertIsNotNone(self.tool.session.geometry)
 
     def test_context_boundaries_reject_late_success(self):
         other_path = Path(self.directory.name) / "other.tif"
@@ -376,25 +387,25 @@ class TracingHardeningTest(TraceFixture):
         self.assertFalse(self.scheduler.active)
         self.assertIsNone(self.plugin.layer_tree_filter)
 
-    def test_b_initial_pending_committed_and_external_edit(self):
+    def test_b_initial_pending_draft_and_external_edit(self):
         self.accept(8, 2)
         self.key(Qt.Key.Key_B)
         self.assertEqual(self.tool.anchors, ())
         self.assertEqual(self.vector.undoStack().index(), 0)
         self.commit_segment()
-        fid = self.tool.current_feature_id
+        geometry = bytes(self.tool.session.geometry.asWkb())
         self.accept(8, 13)
         old = self.submitted[-1]
         self.key(Qt.Key.Key_B)
         old.finish()
-        self.assertEqual(self.tool.current_feature_id, fid)
+        self.assertEqual(bytes(self.tool.session.geometry.asWkb()), geometry)
         self.assertEqual(len(self.tool.anchors), 2)
         self.key(Qt.Key.Key_B)
         self.assertEqual(self.vector.featureCount(), 0)
-        self.assertIsNone(self.tool.current_feature_id)
+        self.assertIsNone(self.tool.session.geometry)
         self.assertEqual(len(self.tool.anchors), 1)
         self.commit_segment(goal=(8, 13))
-        self.assertEqual(self.vector.featureCount(), 1)
+        self.assertEqual(self.vector.featureCount(), 0)
         self.vector.beginEditCommand("unrelated")
         feature = QgsFeature(self.vector.fields())
         feature.setGeometry(
@@ -405,45 +416,46 @@ class TracingHardeningTest(TraceFixture):
         self.vector.addFeature(feature)
         self.vector.endEditCommand()
         index = self.vector.undoStack().index()
-        self.assertFalse(self.tool.has_active_trace())
+        self.assertTrue(self.tool.has_active_trace())
         self.key(Qt.Key.Key_B)
         self.assertEqual(self.vector.undoStack().index(), index)
-        self.assertEqual(self.vector.featureCount(), 2)
+        self.assertEqual(self.vector.featureCount(), 1)
+        self.assertEqual(len(self.tool.anchors), 1)
+        self.assertIsNone(self.tool.session.geometry)
 
-    def test_failed_add_change_transform_and_missing_feature(self):
+    def test_failed_transform_and_unrelated_feature_removal_preserve_draft(self):
         self.accept(8, 2)
-        for method in ("addFeature", "changeGeometry"):
-            if method == "changeGeometry":
+        for later in (False, True):
+            if later:
                 self.commit_segment()
             previous = self.tool.anchors
             geometry = (
-                self.vector.getFeature(self.tool.current_feature_id).geometry().asWkt()
-                if self.tool.current_feature_id is not None
+                bytes(self.tool.session.geometry.asWkb())
+                if self.tool.session.geometry is not None
                 else None
             )
             self.accept(8, 13)
-            with patch.object(self.vector, method, return_value=False):
+            with patch.object(
+                self.tool,
+                "build_path_points",
+                side_effect=ValueError("transform failed"),
+            ):
                 self.submitted[-1].finish()
             self.assertEqual(self.tool.anchors, previous)
+            self.assertEqual(self.vector.featureCount(), 0)
             if geometry is not None:
-                self.assertEqual(
-                    self.vector.getFeature(self.tool.current_feature_id)
-                    .geometry()
-                    .asWkt(),
-                    geometry,
-                )
-        self.accept(8, 13)
-        with patch.object(
-            self.tool, "build_path_points", side_effect=ValueError("transform failed")
-        ):
-            self.submitted[-1].finish()
-        self.assertEqual(self.tool.anchors, previous)
+                self.assertEqual(bytes(self.tool.session.geometry.asWkb()), geometry)
+        feature = QgsFeature(self.vector.fields())
+        feature.setGeometry(self.tool.session.geometry)
+        self.assertTrue(self.vector.addFeature(feature))
         self.accept(8, 13)
         task = self.submitted[-1]
-        self.vector.deleteFeature(self.tool.current_feature_id)
+        self.assertTrue(self.vector.deleteFeature(feature.id()))
         task.finish()
         self.assertEqual(self.vector.featureCount(), 0)
-        self.assertFalse(self.tool.has_active_trace())
+        self.assertTrue(self.tool.has_active_trace())
+        self.assertEqual(self.tool.anchors, previous)
+        self.assertEqual(bytes(self.tool.session.geometry.asWkb()), geometry)
 
     def test_preview_defers_vector_conversion_until_commit(self):
         self.vector.setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
@@ -472,7 +484,7 @@ class TracingHardeningTest(TraceFixture):
             self.tool.accept_click(endpoint.xy, screen)
         map_geometry.assert_not_called()
         self.assertTrue(transform.transform.called)
-        committed = self.vector.getFeature(self.tool.current_feature_id).geometry()
+        committed = QgsGeometry(self.tool.session.geometry)
         self.assertEqual(
             len(list(committed.vertices())), len(list(rendered.vertices()))
         )
@@ -496,7 +508,7 @@ class TracingHardeningTest(TraceFixture):
         self.assertFalse(self.tool.tracking_is_active)
         self.assertEqual(self.tool.anchors, previous)
         self.assertEqual(
-            self.vector.getFeature(self.tool.current_feature_id).geometry().asWkt(),
+            self.tool.session.geometry.asWkt(),
             original_geometry,
         )
 
@@ -512,11 +524,7 @@ class TracingHardeningTest(TraceFixture):
             self.submitted[-1].finish()
             rendered = self.tool.preview_controller._rubber_band.asGeometry()
             self.tool.accept_click(endpoint.xy, QPoint(10, 20))
-            committed = (
-                self.vector.getFeature(self.tool.current_feature_id)
-                .geometry()
-                .asMultiPolyline()[0]
-            )
+            committed = self.tool.session.geometry.asMultiPolyline()[0]
             self.assertEqual([QgsPointXY(v) for v in rendered.vertices()], committed)
             self.assertEqual((committed[-1].x(), committed[-1].y()), endpoint.xy)
             anchor_count = len(self.tool.anchors)
@@ -526,11 +534,7 @@ class TracingHardeningTest(TraceFixture):
         self.tool.accept_click((1002.1, 1991.9))
         self.tool.accept_click((1002.2, 1991.8))
         self.submitted[-1].finish()
-        line = (
-            self.vector.getFeature(self.tool.current_feature_id)
-            .geometry()
-            .asMultiPolyline()[0]
-        )
+        line = self.tool.session.geometry.asMultiPolyline()[0]
         self.assertEqual(len(line), 2)
         self.assertEqual((line[-1].x(), line[-1].y()), (1002.2, 1991.8))
 
@@ -541,11 +545,7 @@ class TracingHardeningTest(TraceFixture):
         self.assertEqual(len(self.tool.anchors), 2)
         self.tool.tracing_mode = TracingModes.DENSE_LINE
         self.tool.accept_click((1021, 1990))
-        line = (
-            self.vector.getFeature(self.tool.current_feature_id)
-            .geometry()
-            .asMultiPolyline()[0]
-        )
+        line = self.tool.session.geometry.asMultiPolyline()[0]
         self.assertEqual(
             [(p.x(), p.y()) for p in line],
             [(999, 1990), (1010, 1990), (1015, 1990), (1020, 1990), (1021, 1990)],
@@ -561,9 +561,7 @@ class TracingHardeningTest(TraceFixture):
         self.iface.setActiveLayer(self.vector)
         self.commit_segment()
         feature = QgsFeature(other.fields())
-        feature.setGeometry(
-            self.vector.getFeature(self.tool.current_feature_id).geometry()
-        )
+        feature.setGeometry(self.tool.session.geometry)
         other.addFeature(feature)
         self.accept(8, 13)
         task = self.submitted[-1]
@@ -577,7 +575,9 @@ class TracingHardeningTest(TraceFixture):
         self.accept(8, 13)
         self.vector.undoStack().undo()
         self.submitted[-1].finish()
-        self.assertFalse(self.tool.has_active_trace())
+        self.assertTrue(self.tool.has_active_trace())
+        self.assertEqual(len(self.tool.anchors), 1)
+        self.assertIsNone(self.tool.session.geometry)
         self.assertEqual(self.vector.featureCount(), 0)
 
     def test_startup_malformed_preferences_and_reactivation(self):
@@ -632,7 +632,8 @@ class WorkerThreadTest(TraceFixture):
                 self.assertEqual(self.vector.featureCount(), 0)
                 self.accept(8, 13)
                 wait_until(lambda: not self.tool.tracking_is_active)
-                self.assertEqual(self.vector.featureCount(), 1)
+                self.assertEqual(self.vector.featureCount(), 0)
+                self.assertIsNotNone(self.tool.session.geometry)
             finally:
                 release.set()
                 wait_until(lambda: QgsApplication.taskManager().countActiveTasks() == 0)
@@ -666,7 +667,8 @@ class WorkerThreadTest(TraceFixture):
                 self.assertEqual(len(captured), 1)
                 release.set()
                 wait_until(lambda: not self.tool.tracking_is_active)
-                self.assertEqual(self.vector.featureCount(), 1)
+                self.assertEqual(self.vector.featureCount(), 0)
+                self.assertIsNotNone(self.tool.session.geometry)
             finally:
                 release.set()
                 wait_until(lambda: QgsApplication.taskManager().countActiveTasks() == 0)

@@ -12,7 +12,7 @@ developed by Mikhail Kondratyev. The fork is maintained by
 ## Differences from Raster Tracer
 
 - Live path previews, with adjustable color and width.
-- Windowed raster reads for working with large images.
+- Trace large rasters without loading the whole image into memory.
 - Saved color, snapping, smoothing, and preview preferences.
 - Shortcuts for sampling a color and drawing a straight line with extra vertices.
 - Cancel pending traces or undo the last segment while keeping earlier work.

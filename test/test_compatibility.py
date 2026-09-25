@@ -73,8 +73,10 @@ class CompatibilityTest(TraceFixture):
     def test_background_trace_and_save(self):
         self.add_anchors()
         wait_until(lambda: not self.tool.tracking_is_active)
-        self.assertEqual(self.vector.featureCount(), 1)
+        self.assertEqual(self.vector.featureCount(), 0)
+        self.assertIsNotNone(self.tool.session.geometry)
         self.assertTrue(self.vector.commitChanges())
+        self.assertEqual(self.vector.featureCount(), 1)
         geometry = next(self.vector.getFeatures()).geometry()
         self.assertFalse(geometry.isEmpty())
         self.assertAlmostEqual(geometry.length(), 11)
@@ -110,6 +112,7 @@ class CompatibilityTest(TraceFixture):
         self.assertEqual(len(self.tool.anchors), 1)
         self.accept(8, 13)
         wait_until(lambda: not self.tool.tracking_is_active)
+        self.assertTrue(self.tool.finish_session())
         self.assertEqual(self.vector.featureCount(), 1)
 
     def test_mouse_clicks_create_and_finish_line(self):
@@ -128,8 +131,8 @@ class CompatibilityTest(TraceFixture):
         click(8, 2, Qt.MouseButton.LeftButton)
         click(8, 13, Qt.MouseButton.LeftButton)
         wait_until(lambda: not self.tool.tracking_is_active)
-        self.assertEqual(self.vector.featureCount(), 1)
-        geometry = next(self.vector.getFeatures()).geometry()
+        self.assertEqual(self.vector.featureCount(), 0)
+        geometry = self.tool.session.geometry
         # Synthetic clicks are rounded to integer screen pixels, unlike
         # the exact map-coordinate assertions in the background trace test.
         self.assertAlmostEqual(
@@ -137,6 +140,60 @@ class CompatibilityTest(TraceFixture):
         )
         click(8, 13, Qt.MouseButton.RightButton)
         self.assertFalse(self.tool.has_active_trace())
+        self.assertEqual(self.vector.featureCount(), 1)
+        self.assertEqual(
+            bytes(next(self.vector.getFeatures()).geometry().asWkb()),
+            bytes(geometry.asWkb()),
+        )
+
+    def test_pan_zoom_and_self_snap_keep_the_draft(self):
+        self.tool.tracing_mode = TracingModes.LINE
+        for point in ((1002, 1992), (1008, 1992), (1013, 1996)):
+            self.tool.accept_click(point)
+        expected = bytes(self.tool.session.geometry.asWkb())
+        anchors = self.tool.anchors
+        extent = self.canvas.extent()
+        for kind, position, button, buttons in (
+            (
+                QEvent.Type.MouseButtonPress,
+                (50, 50),
+                Qt.MouseButton.MiddleButton,
+                Qt.MouseButton.MiddleButton,
+            ),
+            (
+                QEvent.Type.MouseMove,
+                (70, 60),
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.MiddleButton,
+            ),
+            (
+                QEvent.Type.MouseButtonRelease,
+                (70, 60),
+                Qt.MouseButton.MiddleButton,
+                Qt.MouseButton.NoButton,
+            ),
+        ):
+            event = QMouseEvent(
+                kind,
+                QPointF(*position),
+                button,
+                buttons,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            QCoreApplication.sendEvent(self.canvas.viewport(), event)
+        self.assertNotEqual(self.canvas.extent(), extent)
+        self.canvas.zoomByFactor(0.5)
+        self.canvas.refresh()
+        self.app.processEvents()
+        self.assertEqual(self.tool.anchors, anchors)
+        self.assertEqual(bytes(self.tool.session.geometry.asWkb()), expected)
+        self.assertEqual(self.vector.featureCount(), 0)
+        self.assertTrue(self.tool.draft_band.isVisible())
+        self.assertEqual(self.tool.snap_to_itself(1008, 1992.25, 0.5), (1008, 1992))
+        self.assertTrue(self.tool.finish_session())
+        self.assertEqual(
+            bytes(next(self.vector.getFeatures()).geometry().asWkb()), expected
+        )
 
     def test_color_snap_and_settings(self):
         self.plugin.ensure_trace_color_enabled()
@@ -163,6 +220,7 @@ class CompatibilityTest(TraceFixture):
         first = self.tool.to_coords(8, 2)
         self.assertEqual(self.tool.to_indexes(first.x(), first.y()), (8, 2))
         wait_until(lambda: not self.tool.tracking_is_active)
+        self.assertTrue(self.tool.finish_session())
         geometry = next(self.vector.getFeatures()).geometry()
         transform = QgsCoordinateTransform(
             self.project.crs(), self.vector.crs(), self.project

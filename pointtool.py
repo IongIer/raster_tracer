@@ -4,13 +4,13 @@ import math
 from contextlib import contextmanager
 from dataclasses import replace
 from enum import Enum
+from itertools import chain
 
 from qgis.core import (
     Qgis,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsCoordinateTransformContext,
-    QgsFeature,
     QgsFeatureRequest,
     QgsGeometry,
     QgsLineString,
@@ -19,6 +19,8 @@ from qgis.core import (
     QgsProject,
     QgsRectangle,
     QgsVectorLayer,
+    QgsVectorLayerUtils,
+    QgsVertexId,
 )
 from qgis.gui import QgsMapToolEdit, QgsRubberBand, QgsVertexMarker
 from qgis.PyQt.QtCore import QCoreApplication, QPoint, Qt
@@ -33,7 +35,6 @@ from .pointtool_session import (
     TraceRequest,
     TraceResult,
     TraceSession,
-    UndoRecord,
     as_xy,
     new_id,
 )
@@ -62,7 +63,7 @@ class TracingModes(Enum):
 
 
 def append_path_points(existing, points):
-    """Extend the final line, retaining the existing geometry for QGIS undo."""
+    """Extend an owned line without converting its existing vertices in Python."""
     if existing.wkbType() == Qgis.WkbType.MultiLineString:
         geometry = QgsGeometry(existing)
         multi = geometry.get()  # Detach before modifying the shared geometry.
@@ -85,6 +86,18 @@ def append_path_points(existing, points):
     return QgsGeometry.fromMultiPolylineXY(lines)
 
 
+def truncate_path_points(existing, count):
+    """Drop an appended segment without retaining a copy of every prefix."""
+    geometry = QgsGeometry(existing)
+    multi = geometry.get()
+    line = multi.lineStringN(multi.numGeometries() - 1)
+    if not 2 <= count <= line.numPoints():
+        raise ValueError("Invalid segment boundary")
+    for index in range(line.numPoints() - 1, count - 1, -1):
+        line.deleteVertex(QgsVertexId(0, 0, index))
+    return geometry
+
+
 class RasterScribePointTool(QgsMapToolEdit):
     def __init__(
         self,
@@ -103,6 +116,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.disposed = False
         self.suspended = True
         self._own_edit = False
+        self._finishing = False
         self._connections = []
         self._raster_connections = []
         self._target_connections = []
@@ -120,6 +134,8 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.task_controller = scheduler or TraceTaskController()
         self.raster_context = RasterTracingContext(self)
         self.rubber_band = QgsRubberBand(canvas, Qgis.GeometryType.Line)
+        self.draft_band = self.createRubberBand(Qgis.GeometryType.Line)
+        self.draft_band.hide()
         self.marker_snap = QgsVertexMarker(canvas)
         self.marker_snap.setColor(QColor(255, 0, 255))
         self.marker_snap.hide()
@@ -166,10 +182,6 @@ class RasterScribePointTool(QgsMapToolEdit):
         return tuple(self.session.anchors)
 
     @property
-    def current_feature_id(self):
-        return self.session.feature_id
-
-    @property
     def tracking_is_active(self):
         return self.session.pending is not None
 
@@ -207,28 +219,31 @@ class RasterScribePointTool(QgsMapToolEdit):
 
     def suspend(self):
         if self.disposed:
-            return
+            return True
         self.suspended = True
-        self.finish_session()
+        finished = self.finish_session()
         self.last_mouse_event_pos = None
         self.marker_snap.hide()
+        return finished
 
     def dispose(self):
         if self.disposed:
-            return
-        self.suspend()
+            return True
+        if not self.suspend():
+            return False
         self.disposed = True
         self._disconnect(self._connections)
         self._disconnect(self._raster_connections)
         self._disconnect(self._target_connections)
         self.preview_controller.dispose()
-        for item in (self.rubber_band, self.marker_snap):
+        for item in (self.rubber_band, self.draft_band, self.marker_snap):
             self.canvas().scene().removeItem(item)
         self.raster_context.reset()
         self.rlayer = None
         self.turn_off_snap = self._enable_trace_color_cb = self._set_trace_color_cb = (
             None
         )
+        return True
 
     def _sync_state(self):
         cls = (
@@ -248,7 +263,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         self._remove_pending_markers()
         self.update_rubber_band()
 
-    def finish_session(self):
+    def _reset_session(self):
         self.session.reset()
         self.task_controller.cancel(self.owner)
         self.preview_controller.clear(cancel=False)
@@ -256,10 +271,66 @@ class RasterScribePointTool(QgsMapToolEdit):
         while self.markers:
             self.canvas().scene().removeItem(self.markers.pop())
         self.rubber_band.hide()
+        self.draft_band.reset(Qgis.GeometryType.Line)
         self.marker_snap.hide()
         self._context = None
         self._disconnect(self._target_connections)
         self._sync_state()
+
+    def finish_session(self, *args):
+        """Publish the completed draft in one short, independently undoable edit."""
+        if self._finishing:
+            return False
+        self._cancel_inflight_segment()
+        geometry = self.session.geometry
+        if geometry is None:
+            self._reset_session()
+            return True
+        layer = QgsProject.instance().mapLayer(self.session.target_id)
+        command_open = False
+        self._finishing = True
+        try:
+            if layer is None or not layer.isEditable():
+                raise ValueError("The draft's target layer is not editable")
+            if layer.isEditCommandActive():
+                raise ValueError(
+                    "Finish the other layer edit before finishing the trace"
+                )
+            with self._editing():
+                feature = QgsVectorLayerUtils.createFeature(layer, geometry)
+                layer.beginEditCommand(self.tr("Trace raster line"))
+                command_open = True
+                if not layer.addFeature(feature):
+                    raise RuntimeError(
+                        "Geometry write failed; the draft is still available"
+                    )
+                layer.endEditCommand()
+                command_open = False
+            self._reset_session()
+            layer.triggerRepaint()
+            return True
+        except Exception as error:
+            if command_open:
+                with self._editing():
+                    layer.destroyEditCommand()
+            self.report_failure("error", str(error))
+            return False
+        finally:
+            self._finishing = False
+
+    def _discard_session(self, *args):
+        self._reset_session()
+
+    def _before_modified_check(self):
+        # Buffered-group saves query dirty layers without beforeCommitChanges.
+        # This is QGIS's hook for including last-minute edits in that query.
+        if (
+            not self._own_edit
+            and not self._finishing
+            and QgsProject.instance().transactionMode()
+            == Qgis.TransactionMode.BufferedGroups
+        ):
+            self.finish_session()
 
     def _semantic_changed(self):
         if self.disposed:
@@ -272,8 +343,8 @@ class RasterScribePointTool(QgsMapToolEdit):
     def _context_changed(self, *args):
         if self.disposed:
             return
-        self.finish_session()
-        self.raster_context.set_sampler_for_layer(self.rlayer)
+        if self.finish_session():
+            self.raster_context.set_sampler_for_layer(self.rlayer)
 
     def _target_changed(self, *args):
         if self.disposed or not self.session.target_id:
@@ -284,7 +355,9 @@ class RasterScribePointTool(QgsMapToolEdit):
 
     def _external_edit(self, *args):
         if not self.disposed and not self._own_edit:
-            self.finish_session()
+            # The draft is independent of layer edits. Do not publish from a
+            # signal emitted inside QUndoStack.push/undo/redo.
+            self._cancel_inflight_segment()
 
     def _layers_removed(self, ids):
         if self.disposed:
@@ -297,7 +370,8 @@ class RasterScribePointTool(QgsMapToolEdit):
     def raster_layer_has_changed(self, layer):
         if self.disposed:
             return
-        self.finish_session()
+        if not self.finish_session():
+            return
         self._disconnect(self._raster_connections)
         self.rlayer = layer
         self.raster_context.set_sampler_for_layer(layer)
@@ -313,12 +387,21 @@ class RasterScribePointTool(QgsMapToolEdit):
             "geometryChanged",
             "featureAdded",
             "featureDeleted",
-            "editingStopped",
-            "beforeRollBack",
-            "beforeCommitChanges",
+            "attributeValueChanged",
             "updatedFields",
         ):
             self._connect(layer, signal, self._external_edit, self._target_connections)
+        for signal in ("beforeCommitChanges", "editingStopped"):
+            self._connect(layer, signal, self.finish_session, self._target_connections)
+        self._connect(
+            layer, "beforeRollBack", self._discard_session, self._target_connections
+        )
+        self._connect(
+            layer,
+            "beforeModifiedCheck",
+            self._before_modified_check,
+            self._target_connections,
+        )
         self._connect(
             layer, "crsChanged", self._context_changed, self._target_connections
         )
@@ -397,11 +480,6 @@ class RasterScribePointTool(QgsMapToolEdit):
             or project.transformContext() != ctx.transform_context
         ):
             return False
-        if (
-            request.feature_id is not None
-            and not layer.getFeature(request.feature_id).isValid()
-        ):
-            return False
         return True
 
     def resolve_endpoint(self, point):
@@ -470,12 +548,20 @@ class RasterScribePointTool(QgsMapToolEdit):
             target = QgsPointXY(x, y)
             threshold = tolerance**2
             best = None
-            for feature in layer.getFeatures(request):
-                geometry = feature.geometry()
+            candidates = ((f.id(), f.geometry()) for f in layer.getFeatures(request))
+            draft = self.session.geometry
+            if (
+                draft is not None
+                and self.session.target_id == layer.id()
+                and draft.boundingBox().intersects(rectangle)
+            ):
+                # A draft behaves like the newest feature for equal distances.
+                candidates = chain(candidates, ((-math.inf, draft),))
+            for feature_id, geometry in candidates:
                 if to_map.isShortCircuited():
                     vertex, index, _, _, distance = geometry.closestVertex(target)
                     if index >= 0 and 0 <= distance <= threshold:
-                        key = (distance, feature.id(), -index)
+                        key = (distance, feature_id, -index)
                         if best is None or key < best[0]:
                             best = key, as_xy(vertex)
                     continue
@@ -484,7 +570,7 @@ class RasterScribePointTool(QgsMapToolEdit):
                 for index, vertex in enumerate(geometry.vertices()):
                     sx, sy = as_xy(to_map.transform(QgsPointXY(vertex)))
                     distance = (sx - x) ** 2 + (sy - y) ** 2
-                    key = (distance, feature.id(), -index)
+                    key = (distance, feature_id, -index)
                     if distance <= threshold and (best is None or key < best[0]):
                         best = key, (sx, sy)
             return best[1] if best is not None else (x, y)
@@ -549,7 +635,6 @@ class RasterScribePointTool(QgsMapToolEdit):
             start,
             endpoint,
             self.session.target_id,
-            self.session.feature_id,
             self.tracing_mode.name,
             self.smooth_line,
             self.trace_color_value,
@@ -565,6 +650,8 @@ class RasterScribePointTool(QgsMapToolEdit):
         if layer is None or not layer.isEditable():
             self.report_failure("invalid_input")
             return
+        if self.anchors and self.session.target_id != layer.id():
+            return  # A failed publication must keep its original draft/context.
         try:
             endpoint = self.resolve_endpoint(point)
             if not self.anchors:
@@ -700,55 +787,39 @@ class RasterScribePointTool(QgsMapToolEdit):
             self._own_edit = previous
 
     def _commit(self, request, result):
-        layer = None
-        command_open = False
         try:
             if not self._valid_request(request):
                 self._finish_pending(request.request_id)
                 return
-            layer = QgsProject.instance().mapLayer(request.target_id)
             points = self.build_path_points(request, result, in_layer_crs=True)
-            feature = None
-            if request.feature_id is None:
-                feature = QgsFeature(layer.fields())
+            previous = self.session.geometry
+            if previous is None:
+                previous_vertices = 0
                 geometry = QgsGeometry.fromMultiPolylineXY([points])
-                feature.setGeometry(geometry)
             else:
-                feature = layer.getFeature(request.feature_id)
-                if not feature.isValid():
-                    raise ValueError("Target feature disappeared")
-                geometry = append_path_points(feature.geometry(), points)
-            # Validate again immediately before editing, after all transforms.
+                previous_vertices = previous.constGet().nCoordinates()
+                geometry = append_path_points(previous, points)
+            # Validate again after transforms before replacing the owned draft.
             if not self._valid_request(request):
                 self._finish_pending(request.request_id)
                 return
-            with self._editing():
-                layer.beginEditCommand(self.tr("Trace raster segment"))
-                command_open = True
-                ok = (
-                    layer.addFeature(feature)
-                    if request.feature_id is None
-                    else layer.changeGeometry(request.feature_id, geometry)
-                )
-                if not ok:
-                    raise RuntimeError("Geometry write failed")
-                layer.endEditCommand()
-                command_open = False
-            stack = layer.undoStack()
-            record = UndoRecord(
-                stack.index(), stack.command(stack.index() - 1), request.feature_id
-            )
-            self.session.accept(request, feature.id(), record)
+            self.session.accept(request, geometry, previous_vertices)
             self.markers.append(self._pending_markers.pop(request.request_id))
             self.preview_controller.clear()
+            self._show_draft()
             self.update_rubber_band()
-            layer.triggerRepaint()
         except Exception as error:
-            if command_open and layer is not None:
-                with self._editing():
-                    layer.destroyEditCommand()
             self._finish_pending(request.request_id)
             self.report_failure("error", str(error))
+
+    def _show_draft(self):
+        geometry = self.session.geometry
+        if geometry is None:
+            self.draft_band.reset(Qgis.GeometryType.Line)
+            return
+        layer = QgsProject.instance().mapLayer(self.session.target_id)
+        self.draft_band.setToGeometry(geometry, layer)
+        self.draft_band.show()
 
     def remove_last_anchor_point(self):
         if self.tracking_is_active:
@@ -756,29 +827,17 @@ class RasterScribePointTool(QgsMapToolEdit):
             return
         if not self.anchors:
             return
-        if not self.session.undo_records:
-            self.finish_session()
+        if not self.session.segment_vertices:
+            self._discard_session()
             return
         self._cancel_inflight_segment()
-        layer = QgsProject.instance().mapLayer(self.session.target_id)
-        record = self.session.undo_records[-1]
-        if layer is None or not layer.isEditable():
-            self.finish_session()
-            return
-        stack = layer.undoStack()
-        if (
-            stack.index() != record.index
-            or stack.command(record.index - 1) is not record.command
-        ):
-            self.finish_session()
-            return
-        with self._editing():
-            stack.undo()
-        self.session.undo()
+        count = self.session.segment_vertices[-1]
+        geometry = truncate_path_points(self.session.geometry, count) if count else None
+        self.session.undo(geometry)
         self.canvas().scene().removeItem(self.markers.pop())
         self._sync_state()
+        self._show_draft()
         self.update_rubber_band()
-        layer.triggerRepaint()
 
     def keyPressEvent(self, event):
         if self.disposed or self.suspended:

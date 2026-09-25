@@ -22,6 +22,10 @@ If a preview takes a wrong turn, move the pointer closer to the last point.
 Use `B` to undo the last tracing step. You can repeat the example after
 deleting the line from **Traced lines**.
 
+While tracing, the accepted segments form a visible draft using QGIS's
+digitizing appearance. Right-click adds the complete line to the vector layer
+and its attribute table. QGIS Undo/Redo then removes or restores the whole line.
+
 ## Common tasks
 
 ### Trace your own map
@@ -47,8 +51,9 @@ can help when the line's color varies across the map.
 ### Join an existing line
 
 Enable **Snap to vector layer**. Set a distance and click near a vertex in the
-active vector layer. The new segment ends at the nearest vertex within that
-distance. Snapping joins coordinates; it does not merge separate features.
+active vector layer or the current draft. The new segment ends at the nearest
+vertex within that distance. Snapping joins coordinates; it does not merge
+separate features.
 
 The distance uses the map canvas's coordinate system: usually metres or feet
 in a projected CRS, or degrees in a geographic CRS. It is not a screen-pixel
@@ -66,12 +71,19 @@ midpoint. Press `D` again to return to tracing.
 ### Cancel or finish a line
 
 Press Escape to cancel the segment being calculated. Earlier segments remain.
-Press `B` to cancel a pending segment, or undo the last tracing step if no
-other edit has followed it. Right-click to finish the current line.
+Press `B` to cancel a pending segment, or remove the last accepted segment from
+the current draft. Right-click to finish the line. After finishing, use QGIS's
+Undo command (`Ctrl-Z`) to remove the entire line; Redo restores it. During
+tracing, `B` affects the draft and QGIS Undo affects edits already in the layer.
 
-Switching layers or tools, changing the project CRS, or stopping editing
-ends the current line. Lines already drawn stay in the layer. Changing the
-trace color, mode, smoothing, or snapping cancels a pending segment.
+Switching layers or tools, changing the project CRS, closing the dock, or saving
+layer edits finishes the accepted draft. Discarding layer edits also discards
+the draft. Finish with a right-click before saving if QGIS's save action is not
+yet enabled. Changing trace settings or making other layer edits cancels a
+pending calculation while keeping the draft.
+
+With buffered transaction groups enabled, QGIS may finish the draft when
+checking for unsaved edits.
 
 ## Controls and shortcuts
 
@@ -80,7 +92,7 @@ trace color, mode, smoothing, or snapping cancels a pending segment.
 | Layer to trace | Choose the source raster. |
 | Trace color | Follow the chosen color for every segment. |
 | Snap to nearest | Move the end point toward the chosen color within the given radius, in raster pixels. Requires Trace color. Maximum radius: 99 pixels. |
-| Snap to vector layer | Snap to a vertex in the active vector layer, within the given distance in canvas CRS units. Takes precedence over color snapping. |
+| Snap to vector layer | Snap to a vertex in the active vector layer or current draft, within the given distance in canvas CRS units. Takes precedence over color snapping. |
 | Smooth lines | Smooth the traced path. The preview uses the same smoothing. |
 | Preview path | Show the proposed path while moving the pointer. The adjacent button sets its color. |
 | Preview width | Set the width of the preview line. |
@@ -122,7 +134,7 @@ Pixels marked as nodata or invalid cannot be traced or sampled for color.
 | No path is found | Check for gaps or invalid pixels. Use `A` to draw a straight segment across a gap. |
 | Snapping reaches too far | Check the units: color snapping uses raster pixels; vector snapping uses the canvas CRS. A distance of 1 degree can be very large. |
 | The raster is rejected | Check that GDAL can open it, that it has at least three bands, and that its mapping is north-up. |
-| `B` does not undo an earlier trace | Another edit may have followed it. Use QGIS's Undo command to review edits in order. |
+| `B` does not undo an earlier trace | `B` only edits the current draft. Use QGIS's Undo command for finished lines. |
 
 For a failure that persists, check the **Raster Scribe** tab in QGIS's Log
 Messages panel. Include the message, QGIS version, and steps to reproduce it
