@@ -27,6 +27,7 @@ SCRATCH_BYTES = SCRATCH_PIXELS * 32
 CURSOR_RESERVE_BYTES = 6 * 1024 * 1024
 WINDOW_PADDING = 1024
 MIN_WINDOW_SIZE = 512
+CACHE_ALIGNMENT = 256
 
 
 def check_cancel(cancel):
@@ -74,6 +75,25 @@ def validate_budget(bounds, live_bytes=0):
     return pixels
 
 
+def cache_bounds(bounds, height, width, live_bytes=0):
+    """Prefetch nearby windows without expanding the requested search graph."""
+    top, bottom, left, right = bounds
+    for alignment in (CACHE_ALIGNMENT, CACHE_ALIGNMENT // 2, CACHE_ALIGNMENT // 4):
+        aligned = (
+            top // alignment * alignment,
+            min(height, (bottom + alignment - 1) // alignment * alignment),
+            left // alignment * alignment,
+            min(width, (right + alignment - 1) // alignment * alignment),
+        )
+        try:
+            validate_budget(aligned, live_bytes)
+        except ResourceLimitError:
+            continue
+        return aligned
+    validate_budget(bounds, live_bytes)
+    return bounds
+
+
 def read_rgb(dataset, source, bounds, cancel):
     top, bottom, left, right = bounds
     shape = (bottom - top, right - left)
@@ -114,8 +134,13 @@ def color_cost(bands, valid, color, cancel=lambda: False):
     if len(color) != 3 or not all(np.isfinite(c) for c in color):
         raise InvalidRasterError("Nonfinite trace color")
     cost = np.empty(valid.shape, dtype=np.int64)
-    flat_cost, flat_valid = cost.reshape(-1), valid.reshape(-1)
-    flat_bands = [band.reshape(-1) for band in bands]
+    flat_cost = cost.reshape(-1)
+    # A cropped cache may be strided. Its flat iterator copies only the current
+    # bounded chunk, rather than reshape() copying the entire retained window.
+    flat_valid = valid.reshape(-1) if valid.flags.c_contiguous else valid.flat
+    flat_bands = [
+        band.reshape(-1) if band.flags.c_contiguous else band.flat for band in bands
+    ]
     for offset in range(0, cost.size, SCRATCH_PIXELS):
         check_cancel(cancel)
         end = min(cost.size, offset + SCRATCH_PIXELS)
@@ -126,6 +151,7 @@ def color_cost(bands, valid, color, cancel=lambda: False):
                 delta = np.subtract(values[offset:end], target)
                 np.square(delta, out=delta)
                 scratch += delta
+                del delta
         # Invalid cells are impassable; zero is only an unused storage value.
         scratch[~mask] = 0
         if (
@@ -150,11 +176,16 @@ class RasterSnapshot:
 
     @property
     def nbytes(self):
-        return (
-            sum(b.nbytes for b in self.bands)
-            + self.valid.nbytes
-            + (self.cost.nbytes if self.cost is not None else 0)
-        )
+        # Views retain their backing arrays, including a cropped prefetch cache.
+        # Count each allocation once even if several views share it.
+        allocations = {}
+        for array in (*self.bands, self.valid, self.cost):
+            if array is None:
+                continue
+            while isinstance(array.base, np.ndarray):
+                array = array.base
+            allocations[id(array)] = array.nbytes
+        return sum(allocations.values())
 
     def covers(self, source, bounds):
         a, b, c, d = self.bounds
@@ -182,9 +213,15 @@ def prepare_snapshot(work, cached, cancel):
             raise OutsideMapError("Endpoint outside search window")
     check_cancel(cancel)
     rgb_hit = cached is not None and cached.covers(work.source, work.bounds)
+    # The scheduler evicts a non-covering cache before starting a worker. Direct
+    # callers can still hold one, so account for that owner during replacement.
+    live_bytes = cached.nbytes if cached is not None and not rgb_hit else 0
     if rgb_hit:
         snapshot = cached
     else:
+        bounds = cache_bounds(
+            work.bounds, work.source.height, work.source.width, live_bytes
+        )
         dataset = None
         try:
             dataset = gdal.OpenEx(
@@ -197,8 +234,15 @@ def prepare_snapshot(work, cached, cancel):
                 work.source.width,
             ):
                 raise InvalidRasterError("Raster source changed or cannot be opened")
-            bands, valid = read_rgb(dataset, work.source, work.bounds, cancel)
-            snapshot = RasterSnapshot(work.source, work.bounds, bands, valid)
+            try:
+                bands, valid = read_rgb(dataset, work.source, bounds, cancel)
+            except (InvalidRasterError, RuntimeError):
+                if bounds == work.bounds:
+                    raise
+                bounds, bands, valid = work.bounds, None, None
+            if bands is None:
+                bands, valid = read_rgb(dataset, work.source, bounds, cancel)
+            snapshot = RasterSnapshot(work.source, bounds, bands, valid)
         finally:
             dataset = None
     read_duration = time.perf_counter() - started
@@ -220,11 +264,38 @@ def prepare_snapshot(work, cached, cancel):
         # Account for it until replacement; the scheduler drops all other owners.
         pixels = snapshot.valid.size
         if (
-            snapshot.nbytes + pixels * 8 + SCRATCH_BYTES + CURSOR_RESERVE_BYTES
+            live_bytes
+            + snapshot.nbytes
+            + pixels * 8
+            + SCRATCH_BYTES
+            + CURSOR_RESERVE_BYTES
             > MAX_ARRAY_BYTES
         ):
             raise ResourceLimitError("Cost snapshot budget")
-        costs = color_cost(snapshot.bands, snapshot.valid, color, cancel)
+        try:
+            costs = color_cost(snapshot.bands, snapshot.valid, color, cancel)
+        except InvalidRasterError:
+            if snapshot.bounds == work.bounds:
+                raise
+            # Prefetch must not introduce a cost-range error outside the exact
+            # search window. Keep immutable RGB views, but limit these costs to
+            # the requested region. Their backing storage remains accounted.
+            a, b, c, d = work.bounds
+            view = (slice(a - top, b - top), slice(c - left, d - left))
+            snapshot = RasterSnapshot(
+                snapshot.source,
+                work.bounds,
+                tuple(band[view] for band in snapshot.bands),
+                snapshot.valid[view],
+                snapshot.cost,
+                snapshot.cost_key,
+            )
+            top, _, left, _ = snapshot.bounds
+            costs = None
+        if costs is None:
+            # Leave the exception handler first: its traceback retains the
+            # failed full-sized cost allocation until the exception is cleared.
+            costs = color_cost(snapshot.bands, snapshot.valid, color, cancel)
         snapshot = RasterSnapshot(
             snapshot.source, snapshot.bounds, snapshot.bands, snapshot.valid, costs, key
         )
@@ -313,14 +384,9 @@ class RasterTracingContext:
         if not valid.any():
             return i, j
         cost = color_cost(bands, valid, color)
-        rows, cols = np.nonzero(valid)
-        # Inclusive clipped neighborhood; deterministic distance, row, column ties.
-        return min(
-            ((int(r + bounds[0]), int(c + bounds[2])) for r, c in zip(rows, cols)),
-            key=lambda p: (
-                int(cost[p[0] - bounds[0], p[1] - bounds[2]]),
-                (p[0] - i) ** 2 + (p[1] - j) ** 2,
-                p[0],
-                p[1],
-            ),
-        )
+        rows, cols = np.nonzero(valid & (cost == cost[valid].min()))
+        distance = (rows + (bounds[0] - i)) ** 2 + (cols + (bounds[2] - j)) ** 2
+        # nonzero() yields row/column order; argmin() keeps the first distance
+        # tie, matching the previous (color cost, distance, row, column) order.
+        best = int(distance.argmin())
+        return int(rows[best] + bounds[0]), int(cols[best] + bounds[2])

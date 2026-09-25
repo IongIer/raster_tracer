@@ -53,7 +53,11 @@ def execute_request(work, snapshot=None, cancel=lambda: False):
             timings=timings,
         )
     except TraceCancelled:
-        status, detail = "cancelled", ""
+        # Only fully prepared immutable snapshots reach this local variable.
+        # Keeping one does not authorize delivery of its revoked path result.
+        return TraceResult(
+            work.request_id, "cancelled", snapshot=snapshot, timings=timings
+        )
     except ResourceLimitError as error:
         status, detail = "resource_limit", str(error)
     except (InvalidRasterError, OutsideMapError, ValueError) as error:
@@ -70,6 +74,7 @@ class FindPathTask(QgsTask):
         self.snapshot = snapshot
         self.callback = callback
         self.outcome = None
+        self._terminal_snapshot = None
         self._reported = False
         self.profile = ""
 
@@ -100,11 +105,21 @@ class FindPathTask(QgsTask):
         self._reported = True
         outcome = self.outcome
         if self.isCanceled():
-            outcome = TraceResult(self.work.request_id, "cancelled")
+            outcome = TraceResult(
+                self.work.request_id,
+                "cancelled",
+                snapshot=outcome.snapshot if outcome is not None else None,
+                timings=outcome.timings if outcome is not None else {},
+            )
         elif outcome is None or (not success and outcome.status == "success"):
             outcome = TraceResult(
                 self.work.request_id, "error", diagnostics="Task terminated"
             )
+        # Keep the handoff on the task, not in callback arguments. A terminal
+        # callback may immediately start another worker after evicting this
+        # cache; this frame and instrumentation wrappers must not retain it.
+        self._terminal_snapshot = outcome.snapshot
+        outcome = replace(outcome, snapshot=None)
         self.outcome = self.snapshot = None
         callback, self.callback = self.callback, None
         if PROFILE_ENABLED:
@@ -113,7 +128,10 @@ class FindPathTask(QgsTask):
                 "Raster Scribe",
                 Qgis.MessageLevel.Info,
             )
-        callback(self, outcome)
+        try:
+            callback(self, outcome)
+        finally:
+            self._terminal_snapshot = None
 
 
 @dataclass
@@ -121,6 +139,7 @@ class ScheduledRequest:
     request: object
     callback: object
     committed: bool
+    cache_generation: int = 0
 
 
 class TraceTaskController:
@@ -136,6 +155,7 @@ class TraceTaskController:
         self._queued = None
         self._snapshot = None
         self._closed = False
+        self._cache_generation = 0
         self._factory = task_factory
         self._submit = submit or QgsApplication.taskManager().addTask
 
@@ -193,6 +213,7 @@ class TraceTaskController:
             if snapshot.cost_key != (True, work.color, "float64/int64/masked-v1"):
                 snapshot = replace(snapshot, cost=None, cost_key=None)
         self._running = job
+        job.cache_generation = self._cache_generation
         task = self._factory(work, snapshot, self._terminal)
         self._task = task
         try:
@@ -211,8 +232,11 @@ class TraceTaskController:
             return
         job = self._running
         self._task = self._running = None
-        if job.callback is not None and not self._closed:
-            self._snapshot = result.snapshot
+        if not self._closed and job.cache_generation == self._cache_generation:
+            self._snapshot = (
+                getattr(task, "_terminal_snapshot", None) or result.snapshot
+            )
+        task._terminal_snapshot = task.snapshot = task.outcome = None
         # The preview retains only the path, never a second large cache owner.
         result = replace(result, snapshot=None)
         callback = job.callback() if job.callback is not None else None
@@ -240,6 +264,9 @@ class TraceTaskController:
             self._running.callback = None
             self._task.cancel()
         if evict:
+            # A late cancelled task must not repopulate a cache explicitly
+            # cleared by finishing, switching source/context or unloading.
+            self._cache_generation += 1
             self._snapshot = None
 
     def shutdown(self):

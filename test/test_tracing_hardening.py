@@ -553,10 +553,13 @@ class TracingHardeningTest(TraceFixture):
         self.assertFalse(self.submitted)
 
     def test_layer_undo_and_feature_id_collisions_do_not_cross_targets(self):
-        self.commit_segment()
         other = QgsVectorLayer("MultiLineString?crs=EPSG:3857", "other", "memory")
         self.project.addMapLayer(other)
         other.startEditing()
+        # Adding a layer can notify the layer selector and end an active trace.
+        # Set up both targets before exercising a switch with work in flight.
+        self.iface.setActiveLayer(self.vector)
+        self.commit_segment()
         feature = QgsFeature(other.fields())
         feature.setGeometry(
             self.vector.getFeature(self.tool.current_feature_id).geometry()

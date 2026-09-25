@@ -69,7 +69,7 @@ def main():
         tests = [
             f"raster_scribe.test.{path.stem}"
             for path in sorted(
-                (root / "test").glob("test_core.py" if args.core_only else "test_*.py")
+                (root / "test").glob("test_core*.py" if args.core_only else "test_*.py")
             )
         ]
         suite = unittest.defaultTestLoader.loadTestsFromNames(tests)

@@ -43,9 +43,14 @@ def _find_path_core(
     Manhattan distance breaks ties only. Negative/nonintegral costs are invalid;
     callers preparing arrays validate the entire graph before publishing it.
     Python integers avoid overflow in cumulative costs.
+
+    Costs and validity must stay unchanged during the search. Every incoming
+    edge to a pixel adds the same nonnegative cost, and predecessor distances
+    are popped in increasing order. Its first discovery is therefore optimal;
+    parents can also track discovered pixels without a distance dictionary.
     """
     started = time.perf_counter()
-    costs = {}
+    parents = {}
 
     def finish(status, path=None, cost=None):
         return FindPathCoreResult(
@@ -53,7 +58,7 @@ def _find_path_core(
             cost,
             {
                 "duration": time.perf_counter() - started,
-                "nodes": len(costs),
+                "nodes": len(parents),
             },
             status,
         )
@@ -76,14 +81,11 @@ def _find_path_core(
         return finish("resource_limit")
     sequence = itertools.count()
     frontier = [(0, 0, next(sequence), start)]
-    costs[start] = 0
-    parents = {start: None}
+    parents[start] = None
     while frontier:
         if cancel_cb and cancel_cb():
             return finish("cancelled")
         queued_cost, _, _, current = heapq.heappop(frontier)
-        if queued_cost != costs[current]:
-            continue
         if current == goal:
             path = []
             while current is not None:
@@ -92,6 +94,10 @@ def _find_path_core(
             path.reverse()
             return finish("success", path, queued_cost)
         for neighbor in get_neighbors(height, width, current):
+            # Discovered pixels already passed validation; only new pixels
+            # need their mask and cost read.
+            if neighbor in parents:
+                continue
             if valid is not None and not valid[neighbor]:
                 continue
             value = graph[neighbor]
@@ -102,18 +108,11 @@ def _find_path_core(
             if step < 0 or step != value:
                 return finish("invalid_input")
             candidate = queued_cost + step
-            previous = costs.get(neighbor)
-            if previous is None or candidate < previous:
-                if (previous is None and len(costs) >= max_nodes) or len(
-                    frontier
-                ) >= max_frontier:
-                    return finish("resource_limit")
-                costs[neighbor] = candidate
-                parents[neighbor] = current
-                distance = abs(goal[0] - neighbor[0]) + abs(goal[1] - neighbor[1])
-                heapq.heappush(
-                    frontier, (candidate, distance, next(sequence), neighbor)
-                )
+            if len(parents) >= max_nodes or len(frontier) >= max_frontier:
+                return finish("resource_limit")
+            parents[neighbor] = current
+            distance = abs(goal[0] - neighbor[0]) + abs(goal[1] - neighbor[1])
+            heapq.heappush(frontier, (candidate, distance, next(sequence), neighbor))
     return finish("no_path")
 
 

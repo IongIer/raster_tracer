@@ -115,7 +115,7 @@ class TracePreviewController:
             return
         self._current_request = self._pending_request = request
         self._rubber_band.hide()
-        self._timer.start(200)
+        self._timer.start(100)
 
     def ensure_inflight_started(self):
         self._timer.stop()

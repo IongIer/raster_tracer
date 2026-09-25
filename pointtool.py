@@ -216,9 +216,9 @@ class RasterScribePointTool(QgsMapToolEdit):
             self.canvas().scene().removeItem(marker)
         self._pending_markers.clear()
 
-    def _cancel_inflight_segment(self):
+    def _cancel_inflight_segment(self, *, evict=True):
         self.session.invalidate()  # Revoke identity before requesting cancellation.
-        self.task_controller.cancel(self.owner)
+        self.task_controller.cancel(self.owner, evict=evict)
         self.preview_controller.clear(cancel=False)
         self._remove_pending_markers()
         self.update_rubber_band()
@@ -240,7 +240,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         if self.disposed:
             return
         hover = self.last_mouse_event_pos
-        self._cancel_inflight_segment()
+        self._cancel_inflight_segment(evict=False)
         if hover is not None and self.anchors and not self.suspended:
             self._hover(hover)
 
@@ -408,7 +408,10 @@ class RasterScribePointTool(QgsMapToolEdit):
         )
 
     def snap_to_itself(self, x, y, tolerance=1):
-        """Nearest vertex in canvas map units, including the tolerance boundary."""
+        """Nearest vertex in canvas map units, including the tolerance boundary.
+
+        Ties prefer the lowest feature ID, then the last vertex in its geometry.
+        """
         layer = self.get_current_vector_layer()
         if (
             layer is None
@@ -439,15 +442,25 @@ class RasterScribePointTool(QgsMapToolEdit):
             request = (
                 QgsFeatureRequest().setSubsetOfAttributes([]).setFilterRect(rectangle)
             )
+            target = QgsPointXY(x, y)
+            threshold = tolerance**2
             best = None
             for feature in layer.getFeatures(request):
+                geometry = feature.geometry()
+                if to_map.isShortCircuited():
+                    vertex, index, _, _, distance = geometry.closestVertex(target)
+                    if index >= 0 and 0 <= distance <= threshold:
+                        key = (distance, feature.id(), -index)
+                        if best is None or key < best[0]:
+                            best = key, as_xy(vertex)
+                    continue
                 # Transform every vertex before comparing distances; layer-space
                 # nearest vertices can differ under anisotropic CRS transforms.
-                for index, vertex in enumerate(feature.geometry().vertices()):
+                for index, vertex in enumerate(geometry.vertices()):
                     sx, sy = as_xy(to_map.transform(QgsPointXY(vertex)))
                     distance = (sx - x) ** 2 + (sy - y) ** 2
-                    key = (distance, feature.id(), index)
-                    if distance <= tolerance**2 and (best is None or key < best[0]):
+                    key = (distance, feature.id(), -index)
+                    if distance <= threshold and (best is None or key < best[0]):
                         best = key, (sx, sy)
             return best[1] if best is not None else (x, y)
         except Exception:
