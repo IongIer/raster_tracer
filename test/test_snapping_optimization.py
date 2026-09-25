@@ -268,11 +268,14 @@ class SnappingOptimizationTest(TraceFixture):
             self.assertEqual(self.tool.tracing_mode, TracingModes.DENSE_LINE)
             self.tool.accept_click((999, 1990))
             self.tool.accept_click((1321, 1990))
-        self.assertEqual(self.tool.snap_to_itself(1004, 1990.25, 0.5), (1004, 1990))
+        vertex = self.tool.session.geometry.asMultiPolyline()[0][1]
+        target = (vertex.x(), vertex.y())
+        cursor = (vertex.x(), vertex.y() + 0.25)
+        self.assertEqual(self.tool.snap_to_itself(*cursor, 0.5), target)
         self.tool.remove_last_anchor_point()
-        self.assertEqual(self.tool.snap_to_itself(1004, 1990.25, 0.5), (1004, 1990.25))
+        self.assertEqual(self.tool.snap_to_itself(*cursor, 0.5), cursor)
         self.tool.accept_click((1321, 1990))
-        self.assertEqual(self.tool.snap_to_itself(1004, 1990.25, 0.5), (1004, 1990))
+        self.assertEqual(self.tool.snap_to_itself(*cursor, 0.5), target)
         self.key(Qt.Key.Key_D)
         self.assertEqual(self.tool.tracing_mode, TracingModes.PATH)
 

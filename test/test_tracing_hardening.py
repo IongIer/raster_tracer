@@ -3,12 +3,14 @@
 import threading
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from osgeo import gdal
 from qgis.core import (
+    Qgis,
     QgsApplication,
     QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
     QgsCoordinateTransformContext,
     QgsFeature,
     QgsGeometry,
@@ -437,7 +439,7 @@ class TracingHardeningTest(TraceFixture):
             self.accept(8, 13)
             with patch.object(
                 self.tool,
-                "build_path_points",
+                "build_path_geometry",
                 side_effect=ValueError("transform failed"),
             ):
                 self.submitted[-1].finish()
@@ -459,31 +461,13 @@ class TracingHardeningTest(TraceFixture):
 
     def test_preview_defers_vector_conversion_until_commit(self):
         self.vector.setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
-        capture = self.tool._capture_context
-        transforms = []
-
-        def capture_with_spy(layer):
-            context = capture(layer)
-            transform = Mock(wraps=context.map_to_vector)
-            transforms.append(transform)
-            return replace(context, map_to_vector=transform)
-
-        with patch.object(self.tool, "_capture_context", side_effect=capture_with_spy):
-            self.tool.accept_click((1002.1, 1991.9))
+        self.tool.accept_click((1002.1, 1991.9))
         endpoint, screen = self.preview()
         self.submitted[-1].finish()
-        transform = transforms[0]
-        transform.transform.assert_not_called()
         rendered = self.tool.preview_controller._rubber_band.asGeometry()
         self.assertFalse(rendered.isEmpty())
-
-        # Commit needs layer points, not another discarded map geometry.
-        with patch.object(
-            QgsGeometry, "fromPolylineXY", wraps=QgsGeometry.fromPolylineXY
-        ) as map_geometry:
-            self.tool.accept_click(endpoint.xy, screen)
-        map_geometry.assert_not_called()
-        self.assertTrue(transform.transform.called)
+        transform = self.tool._context.map_to_vector
+        self.tool.accept_click(endpoint.xy, screen)
         committed = QgsGeometry(self.tool.session.geometry)
         self.assertEqual(
             len(list(committed.vertices())), len(list(rendered.vertices()))
@@ -496,11 +480,10 @@ class TracingHardeningTest(TraceFixture):
         # A failed deferred transform still rejects the edit transaction.
         previous = self.tool.anchors
         original_geometry = committed.asWkt()
+        # Preview must work even when the deferred conversion is unusable.
+        self.tool._context = replace(self.tool._context, map_to_vector=None)
         endpoint, screen = self.preview(8, 12)
-        transform.transform.reset_mock()
-        transform.transform.side_effect = ValueError("transform failed")
         self.submitted[-1].finish()
-        transform.transform.assert_not_called()
         self.assertFalse(
             self.tool.preview_controller._rubber_band.asGeometry().isEmpty()
         )
@@ -538,6 +521,40 @@ class TracingHardeningTest(TraceFixture):
         self.assertEqual(len(line), 2)
         self.assertEqual((line[-1].x(), line[-1].y()), (1002.2, 1991.8))
 
+    def test_segment_rejects_nonfinite_interior_and_failed_native_transform(self):
+        self.accept(8, 2)
+        request = self.tool.make_request(self.tool.resolve_endpoint((1013, 1991)))
+        result = TraceResult(
+            request.request_id, "success", processed=((0, 0), (1, 1), (2, 2))
+        )
+        for coordinate in (float("nan"), float("inf")):
+            invalid = replace(
+                request,
+                context=replace(request.context, geo_ref=(coordinate, 2000, 1, 1)),
+            )
+            with self.subTest(coordinate=coordinate), self.assertRaises(ValueError):
+                self.tool.build_path_geometry(invalid, result, in_layer_crs=False)
+        request = replace(
+            request,
+            context=replace(
+                request.context,
+                raster_to_map=QgsCoordinateTransform(
+                    request.context.raster_crs,
+                    QgsCoordinateReferenceSystem("EPSG:4326"),
+                    request.context.transform_context,
+                ),
+            ),
+        )
+        with (
+            patch.object(
+                QgsGeometry,
+                "transform",
+                return_value=Qgis.GeometryOperationResult.InvalidBaseGeometry,
+            ),
+            self.assertRaisesRegex(ValueError, "transform failed"),
+        ):
+            self.tool.build_path_geometry(request, result, in_layer_crs=True)
+
     def test_straight_and_dense_modes_outside_raster_and_junction(self):
         self.tool.tracing_mode = TracingModes.LINE
         self.tool.accept_click((999, 1990))
@@ -547,9 +564,14 @@ class TracingHardeningTest(TraceFixture):
         self.tool.accept_click((1021, 1990))
         line = self.tool.session.geometry.asMultiPolyline()[0]
         self.assertEqual(
-            [(p.x(), p.y()) for p in line],
-            [(999, 1990), (1010, 1990), (1015, 1990), (1020, 1990), (1021, 1990)],
+            [(p.x(), p.y()) for p in line[:2]], [(999, 1990), (1010, 1990)]
         )
+        self.assertEqual((line[-1].x(), line[-1].y()), (1021, 1990))
+        self.assertTrue(all(p.y() == 1990 for p in line))
+        self.assertTrue(all(0 < b.x() - a.x() <= 5 for a, b in zip(line[1:], line[2:])))
+        self.tool.accept_click((1024, 1990))
+        short = self.tool.session.geometry.asMultiPolyline()[0][-3:]
+        self.assertEqual([p.x() for p in short], [1021, 1022.5, 1024])
         self.assertFalse(self.submitted)
 
     def test_layer_undo_and_feature_id_collisions_do_not_cross_targets(self):
@@ -595,12 +617,6 @@ class TracingHardeningTest(TraceFixture):
         self.tool = self.plugin.tool_identify
         self.assertTrue(self.tool.smooth_line)
         self.assertEqual(self.plugin.dockwidget.previewWidthSpinBox.value(), 0.5)
-        widget = self.plugin.dockwidget.checkBoxColor
-        widget.blockSignals(True)
-        with self.plugin._blocked(widget):
-            pass
-        self.assertTrue(widget.signalsBlocked())
-        widget.blockSignals(False)
         self.canvas.setMapTool(self.iface.pan_tool)
         self.plugin.run()
         self.plugin.run()

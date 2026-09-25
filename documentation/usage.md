@@ -64,9 +64,9 @@ distance.
 Press `A` to draw straight segments. Click across the gap, then press `A`
 again to resume tracing.
 
-Press `D` for straight segments with extra vertices at 5-unit intervals in
-the vector layer's coordinate system. A segment shorter than 5 units gets a
-midpoint. Press `D` again to return to tracing.
+Press `D` for straight segments with evenly spaced extra vertices, at most
+5 units apart in the vector layer's coordinate system. A segment shorter than
+5 units gets a midpoint. Press `D` again to return to tracing.
 
 ### Cancel or finish a line
 

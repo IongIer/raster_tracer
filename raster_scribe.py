@@ -24,14 +24,14 @@
 
 import math
 import os.path
-from contextlib import contextmanager
 
-from qgis.core import QgsProject, QgsVectorLayer
+from qgis.core import Qgis
 from qgis.PyQt.QtCore import (
     QCoreApplication,
     QEvent,
     QObject,
     QSettings,
+    QSignalBlocker,
     Qt,
     QTranslator,
 )
@@ -226,14 +226,6 @@ class RasterScribe:
 
     # -------------------------------------------------------------------------
 
-    @contextmanager
-    def _blocked(self, widget):
-        previous = widget.blockSignals(True)
-        try:
-            yield widget
-        finally:
-            widget.blockSignals(previous)
-
     def onClosePlugin(self):
         self._shutdown()
 
@@ -367,7 +359,7 @@ class RasterScribe:
             (dock.checkBoxSmooth, "setChecked", prefs["smooth"]),
         )
         for widget, method, value in updates:
-            with self._blocked(widget):
+            with QSignalBlocker(widget):
                 getattr(widget, method)(value)
         self.checkBoxSnap_changed()
         self.checkBoxSnap2_changed()
@@ -381,21 +373,15 @@ class RasterScribe:
         )
 
     def _select_raster(self):
-        with self._blocked(self.dockwidget.mMapLayerComboBox):
-            self.dockwidget.mMapLayerComboBox.setExceptedLayerList(
-                [
-                    layer
-                    for layer in QgsProject.instance().mapLayers().values()
-                    if isinstance(layer, QgsVectorLayer)
-                ]
-            )
+        with QSignalBlocker(self.dockwidget.mMapLayerComboBox):
+            self.dockwidget.mMapLayerComboBox.setFilters(Qgis.LayerFilter.RasterLayer)
         self.raster_layer_changed()
 
     def _connect_interface(self):
         dock = self.dockwidget
         connections = (
             (dock.closingPlugin, self.onClosePlugin),
-            (dock.mMapLayerComboBox.currentIndexChanged, self.raster_layer_changed),
+            (dock.mMapLayerComboBox.layerChanged, self.raster_layer_changed),
             (dock.checkBoxColor.stateChanged, self.checkBoxColor_changed),
             (dock.mColorButton.colorChanged, self.checkBoxColor_changed),
             (dock.checkBoxSnap.stateChanged, self.checkBoxSnap_changed),
@@ -511,7 +497,7 @@ class RasterScribe:
         if checkbox.isChecked():
             return
 
-        with self._blocked(checkbox):
+        with QSignalBlocker(checkbox):
             checkbox.setChecked(True)
 
         self.checkBoxColor_changed()
@@ -524,7 +510,7 @@ class RasterScribe:
             color = QColor(color)
 
         color_button = self.dockwidget.mColorButton
-        with self._blocked(color_button):
+        with QSignalBlocker(color_button):
             color_button.setColor(color)
 
         self.checkBoxColor_changed()

@@ -108,6 +108,24 @@ class CompactCacheTest(unittest.TestCase):
                 np.testing.assert_array_equal(actual, expected)
                 self.assertFalse(actual.flags.writeable)
 
+    def test_partial_alpha_remains_valid(self):
+        dataset = gdal.GetDriverByName("MEM").Create("", 4, 1, 4, gdal.GDT_Byte)
+        for number, interpretation in enumerate(
+            (gdal.GCI_RedBand, gdal.GCI_GreenBand, gdal.GCI_BlueBand), 1
+        ):
+            band = dataset.GetRasterBand(number)
+            band.SetColorInterpretation(interpretation)
+            band.WriteArray(np.full((1, 4), 10, dtype=np.uint8))
+        alpha = dataset.GetRasterBand(4)
+        alpha.SetColorInterpretation(gdal.GCI_AlphaBand)
+        alpha.WriteArray(np.array([[0, 1, 127, 255]], dtype=np.uint8))
+        source = RasterSourceSpec("unused", 1, 4, 1)
+        bands, valid = raster.read_rgb(dataset, source, (0, 1, 0, 4), lambda: False)
+        np.testing.assert_array_equal(valid, [[False, True, True, True]])
+        np.testing.assert_array_equal(
+            raster.color_cost(bands, valid, (0, 0, 0)), [[0, 300, 300, 300]]
+        )
+
     def test_cropped_snapshots_count_their_compact_backing_allocations(self):
         values = np.arange(40 * 48, dtype=np.uint16).reshape(40, 48).astype(np.uint8)
         source = self.source("backing", (values, values, values))

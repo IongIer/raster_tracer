@@ -15,6 +15,7 @@ from qgis.core import (
     QgsGeometry,
     QgsLineString,
     QgsMessageLog,
+    QgsPoint,
     QgsPointXY,
     QgsProject,
     QgsRectangle,
@@ -42,7 +43,7 @@ from .pointtool_states import WaitingFirstPointState, WaitingMiddlePointState
 from .pointtool_tasks import TraceTaskController, execute_request
 from .utils import get_coords_from_raster_indxs, get_indxs_from_raster_coords
 
-DENSE_LINE_SPACING = 5.0  # Preserve existing spacing in vector layer units.
+DENSE_LINE_SPACING = 5.0  # Maximum vertex spacing in vector layer units.
 SHORTCUT_KEYS = {
     Qt.Key.Key_A,
     Qt.Key.Key_B,
@@ -62,7 +63,7 @@ class TracingModes(Enum):
         return self == TracingModes.PATH
 
 
-def append_path_points(existing, points):
+def append_path_geometry(existing, segment):
     """Extend an owned line without converting its existing vertices in Python."""
     if existing.wkbType() == Qgis.WkbType.MultiLineString:
         geometry = QgsGeometry(existing)
@@ -72,16 +73,18 @@ def append_path_points(existing, points):
         line = multi.lineStringN(multi.numGeometries() - 1)
         if line.numPoints() == 0:
             raise ValueError("Target line is empty")
-        seam = QgsPointXY(line.endPoint())
-        tail = points[1:] if seam == points[0] else points
+        tail = segment.constGet().clone()
         # Native append may replace its shared endpoint. Anchor it at the exact
         # old coordinate, including when QgsPointXY equality is only approximate.
-        line.append(QgsLineString([seam, *tail]))
+        if QgsPointXY(line.endPoint()) == QgsPointXY(tail.startPoint()):
+            tail[0] = line.endPoint()
+        line.append(tail)
         return geometry
     # Retain the existing curve segmentization and Z/M conversion behavior.
     lines = existing.asMultiPolyline()
     if not lines or not lines[-1]:
         raise ValueError("Target line is empty")
+    points = segment.asPolyline()
     lines[-1].extend(points[1:] if lines[-1][-1] == points[0] else points)
     return QgsGeometry.fromMultiPolylineXY(lines)
 
@@ -728,53 +731,48 @@ class RasterScribePointTool(QgsMapToolEdit):
         elif pending is None:
             self.preview_controller.receive(request, result)
 
-    def build_path_points(self, request, result, *, in_layer_crs):
-        """Share path/endpoints, converting only to the caller's required CRS."""
+    def build_path_geometry(self, request, result, *, in_layer_crs):
+        """Build one native segment, converting only to the caller's CRS."""
         ctx = request.context
         if request.mode == "PATH":
             top, left = result.origin
             points = [
-                as_xy(
-                    ctx.raster_to_map.transform(
-                        *get_coords_from_raster_indxs(ctx.geo_ref, (i + top, j + left))
-                    )
-                )
+                get_coords_from_raster_indxs(ctx.geo_ref, (i + top, j + left))
                 for i, j in result.processed
             ]
             if not points:
                 raise ValueError("Empty path")
             if len(points) == 1:
                 points.append(points[0])
-            points[0], points[-1] = request.start.xy, request.goal.xy
+            geometry = QgsGeometry(QgsLineString(points))
+            if (
+                geometry.transform(ctx.raster_to_map)
+                != Qgis.GeometryOperationResult.Success
+            ):
+                raise ValueError("Raster-to-map transform failed")
+            line = geometry.get()
+            line[0], line[-1] = QgsPoint(*request.start.xy), QgsPoint(*request.goal.xy)
         else:
-            points = [request.start.xy, request.goal.xy]
-        if not all(math.isfinite(v) for point in points for v in point):
+            geometry = QgsGeometry(QgsLineString([request.start.xy, request.goal.xy]))
+        # Native length detects nonfinite interior vertices as well as endpoints.
+        if not math.isfinite(geometry.length()):
             raise ValueError("Nonfinite transformed geometry")
         if in_layer_crs:
-            points = [as_xy(ctx.map_to_vector.transform(*p)) for p in points]
-            if request.mode == "DENSE_LINE":
-                a, b = points
-                length = math.hypot(b[0] - a[0], b[1] - a[1])
-                fractions = (
-                    [0.5]
-                    if 0 < length < DENSE_LINE_SPACING
-                    else [
-                        step * DENSE_LINE_SPACING / length
-                        for step in range(1, int(length // DENSE_LINE_SPACING) + 1)
-                        if step * DENSE_LINE_SPACING < length
-                    ]
-                )
-                points = (
-                    [a]
-                    + [
-                        (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
-                        for f in fractions
-                    ]
-                    + [b]
-                )
-            if not all(math.isfinite(v) for point in points for v in point):
+            if (
+                geometry.transform(ctx.map_to_vector)
+                != Qgis.GeometryOperationResult.Success
+            ):
+                raise ValueError("Map-to-layer transform failed")
+            length = geometry.length()
+            if not math.isfinite(length):
                 raise ValueError("Nonfinite transformed geometry")
-        return [QgsPointXY(*p) for p in points]
+            if request.mode == "DENSE_LINE":
+                geometry = (
+                    geometry.densifyByCount(1)
+                    if 0 < length < DENSE_LINE_SPACING
+                    else geometry.densifyByDistance(DENSE_LINE_SPACING)
+                )
+        return geometry
 
     @contextmanager
     def _editing(self):
@@ -790,14 +788,15 @@ class RasterScribePointTool(QgsMapToolEdit):
             if not self._valid_request(request):
                 self._finish_pending(request.request_id)
                 return
-            points = self.build_path_points(request, result, in_layer_crs=True)
+            segment = self.build_path_geometry(request, result, in_layer_crs=True)
             previous = self.session.geometry
             if previous is None:
                 previous_vertices = 0
-                geometry = QgsGeometry.fromMultiPolylineXY([points])
+                geometry = segment
+                geometry.convertToMultiType()
             else:
                 previous_vertices = previous.constGet().nCoordinates()
-                geometry = append_path_points(previous, points)
+                geometry = append_path_geometry(previous, segment)
             # Validate again after transforms before replacing the owned draft.
             if not self._valid_request(request):
                 self._finish_pending(request.request_id)

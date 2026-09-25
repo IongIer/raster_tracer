@@ -224,7 +224,7 @@ class LineUndoTest(TraceFixture):
         expected = self.trace(((999, 1990), (1010, 1990)))
         anchors = self.tool.anchors
         with patch.object(
-            self.tool, "build_path_points", side_effect=ValueError("transform failed")
+            self.tool, "build_path_geometry", side_effect=ValueError("transform failed")
         ):
             self.tool.accept_click((1021, 1990))
         self.assertEqual(self.tool.anchors, anchors)

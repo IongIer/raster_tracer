@@ -12,7 +12,7 @@ from qgis.core import (
     QgsPointXY,
 )
 
-from ..pointtool import TracingModes, append_path_points
+from ..pointtool import TracingModes, append_path_geometry
 from .tracing_fixture import TraceFixture
 
 
@@ -33,7 +33,10 @@ class GeometryAppendTest(unittest.TestCase):
         feature = QgsFeature()
         feature.setGeometry(existing)
         expected = original_append(existing, points)
-        actual = append_path_points(existing, points)
+        segment = QgsGeometry(QgsLineString(points))
+        segment_wkb = bytes(segment.asWkb())
+        actual = append_path_geometry(existing, segment)
+        self.assertEqual(bytes(segment.asWkb()), segment_wkb)
         self.assertEqual(bytes(actual.asWkb()), bytes(expected.asWkb()))
         self.assertEqual(actual.boundingBox(), expected.boundingBox())
         self.assertEqual(existing.boundingBox().asWktPolygon(), bounds)
@@ -110,7 +113,7 @@ class GeometryAppendTest(unittest.TestCase):
             with self.subTest(wkt=geometry.asWkt()):
                 original = bytes(geometry.asWkb())
                 with self.assertRaisesRegex(ValueError, "Target line is empty"):
-                    append_path_points(geometry, points)
+                    append_path_geometry(geometry, QgsGeometry(QgsLineString(points)))
                 self.assertEqual(bytes(geometry.asWkb()), original)
 
 

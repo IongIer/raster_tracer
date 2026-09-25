@@ -106,27 +106,33 @@ def read_rgb(dataset, source, bounds, cancel):
         check_cancel(cancel)
         band = dataset.GetRasterBand(number)
         array = band.ReadAsArray(left, top, shape[1], shape[0]) if band else None
+        check_cancel(cancel)
         if array is None or array.shape != shape or np.iscomplexobj(array):
             raise InvalidRasterError("Malformed RGB band read")
         converted = (
             array if array.dtype == np.uint8 else np.asarray(array, dtype=np.float64)
         )
         del array
-        mask_band = band.GetMaskBand()
-        mask = (
-            mask_band.ReadAsArray(left, top, shape[1], shape[0]) if mask_band else None
-        )
-        if mask is None or mask.shape != shape:
-            raise InvalidRasterError("Malformed validity mask read")
-        valid &= mask != 0
-        del mask
-        flat = converted.reshape(-1)
-        validity = valid.reshape(-1)
-        for offset in range(0, flat.size, SCRATCH_PIXELS):
-            check_cancel(cancel)
-            validity[offset : offset + SCRATCH_PIXELS] &= np.isfinite(
-                flat[offset : offset + SCRATCH_PIXELS]
+        if not band.GetMaskFlags() & gdal.GMF_ALL_VALID:
+            mask_band = band.GetMaskBand()
+            mask = (
+                mask_band.ReadAsArray(left, top, shape[1], shape[0])
+                if mask_band
+                else None
             )
+            check_cancel(cancel)
+            if mask is None or mask.shape != shape:
+                raise InvalidRasterError("Malformed validity mask read")
+            valid &= mask != 0
+            del mask
+        if converted.dtype != np.uint8:
+            flat = converted.reshape(-1)
+            validity = valid.reshape(-1)
+            for offset in range(0, flat.size, SCRATCH_PIXELS):
+                check_cancel(cancel)
+                validity[offset : offset + SCRATCH_PIXELS] &= np.isfinite(
+                    flat[offset : offset + SCRATCH_PIXELS]
+                )
         converted.setflags(write=False)
         bands.append(converted)
     valid.setflags(write=False)

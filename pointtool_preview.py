@@ -3,7 +3,7 @@
 import math
 from dataclasses import replace
 
-from qgis.core import Qgis, QgsGeometry
+from qgis.core import Qgis
 from qgis.gui import QgsRubberBand
 from qgis.PyQt.QtCore import Qt, QTimer
 from qgis.PyQt.QtGui import QColor
@@ -154,8 +154,9 @@ class TracePreviewController:
             self._rubber_band.hide()
             return
         try:
-            points = self._tool.build_path_points(current, result, in_layer_crs=False)
-            geometry = QgsGeometry.fromPolylineXY(points)
+            geometry = self._tool.build_path_geometry(
+                current, result, in_layer_crs=False
+            )
         except Exception:
             self._rubber_band.hide()
             return

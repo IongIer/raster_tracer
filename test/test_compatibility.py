@@ -4,6 +4,8 @@ import numpy as np
 from qgis.core import (
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
+    QgsRasterLayer,
+    QgsVectorLayer,
 )
 from qgis.gui import QgsMapMouseEvent
 from qgis.PyQt.QtCore import (
@@ -54,6 +56,13 @@ class CompatibilityTest(TraceFixture):
         self.tool = self.plugin.tool_identify
         self.tools.append(self.tool)
         self.assertIs(self.canvas.mapTool(), self.tool)
+        self.assertIs(
+            self.plugin.dockwidget.mMapLayerComboBox.currentLayer(), self.raster
+        )
+        self.assertIs(self.tool.rlayer, self.raster)
+        self.assertEqual(
+            self.plugin.dockwidget.previewColorButton.color(), QColor("#80402010")
+        )
 
     def test_read_byte_raster_as_float(self):
         sampler = RasterSampler(self.raster, self.project)
@@ -64,6 +73,38 @@ class CompatibilityTest(TraceFixture):
             self.assertEqual(band.dtype, np.dtype("float32"))
             self.assertEqual(float(band[1, 1]), 0)
             self.assertEqual(float(band[0, 1]), 255)
+
+    def test_raster_selection_tracks_project_changes(self):
+        combo = self.plugin.dockwidget.mMapLayerComboBox
+        self.assertEqual(combo.count(), 1)
+        self.tool.tracing_mode = TracingModes.LINE
+        self.add_anchors()
+
+        self.project.addMapLayer(QgsVectorLayer("Point", "A new vector", "memory"))
+        self.assertEqual(combo.count(), 1)
+        self.assertIs(combo.currentLayer(), self.raster)
+
+        another_raster = QgsRasterLayer(self.raster.source(), "A new raster")
+        self.assertTrue(another_raster.isValid())
+        self.project.addMapLayer(another_raster)
+        self.assertEqual(combo.count(), 2)
+        self.assertIs(combo.currentLayer(), self.raster)
+        self.assertIs(self.tool.rlayer, self.raster)
+        # Inserting another layer must not finish the active draft.
+        self.assertEqual(len(self.tool.anchors), 2)
+        self.assertEqual(self.vector.featureCount(), 0)
+
+        combo.setLayer(another_raster)
+        self.assertIs(self.tool.rlayer, another_raster)
+        self.assertEqual(self.vector.featureCount(), 1)
+        self.assertFalse(self.tool.has_active_trace())
+        self.project.removeMapLayer(another_raster.id())
+        self.assertIs(combo.currentLayer(), self.raster)
+        self.assertIs(self.tool.rlayer, self.raster)
+        self.project.removeMapLayer(self.raster.id())
+        self.assertEqual(combo.count(), 0)
+        self.assertIsNone(combo.currentLayer())
+        self.assertIsNone(self.tool.rlayer)
 
     def test_trace_known_line(self):
         path, cost = self.tool.trace_over_image((8, 2), (8, 13))

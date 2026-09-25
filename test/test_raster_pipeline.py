@@ -20,7 +20,12 @@ from qgis.core import (
 )
 from qgis.PyQt.QtGui import QColor
 
-from ..exceptions import InvalidRasterError, OutsideMapError, ResourceLimitError
+from ..exceptions import (
+    InvalidRasterError,
+    OutsideMapError,
+    ResourceLimitError,
+    TraceCancelled,
+)
 from ..pointtool_raster import (
     MAX_ARRAY_BYTES,
     color_cost,
@@ -108,6 +113,12 @@ class RasterPipelineTest(unittest.TestCase):
 
     def test_nodata_nonfinite_masks_and_cost_range(self):
         values = np.array([[0, 1, 2, 3], [np.nan, np.inf, -999, 10], [1, 1, 1, 1]])
+        # GDAL's all-valid mask does not rule out NaN or infinity in float bands.
+        source = self.source(values)
+        dataset = gdal.Open(source.path)
+        _, valid = read_rgb(dataset, source, (0, 3, 0, 4), lambda: False)
+        self.assertEqual(valid[1].tolist(), [False, False, True, True])
+        dataset = None
         source = self.source(values, -999)
         dataset = gdal.Open(source.path)
         bands, valid = read_rgb(dataset, source, (0, 3, 0, 4), lambda: False)
@@ -136,8 +147,30 @@ class RasterPipelineTest(unittest.TestCase):
             dataset.GetRasterBand.return_value = band
             with self.assertRaises(InvalidRasterError):
                 read_rgb(dataset, source, (0, 2, 0, 2), lambda: False)
+        for mask in (None, np.zeros((1, 2))):
+            band.ReadAsArray.return_value = np.zeros((2, 2), dtype=np.uint8)
+            band.GetMaskFlags.return_value = gdal.GMF_PER_DATASET
+            band.GetMaskBand.return_value.ReadAsArray.return_value = mask
+            with self.assertRaises(InvalidRasterError):
+                read_rgb(dataset, source, (0, 2, 0, 2), lambda: False)
         work = WorkerRequest(1, source, (0, 2, 0, 2), (0, 0), (1, 1), None, False)
         self.assertEqual(execute_request(work).status, "invalid_input")
+
+    def test_cancellation_during_final_byte_band_read(self):
+        source = RasterSourceSpec("unused", 2, 2, 1)
+        dataset = Mock()
+        band = dataset.GetRasterBand.return_value
+        band.GetMaskFlags.return_value = gdal.GMF_ALL_VALID
+        band.ReadAsArray.return_value = np.zeros((2, 2), dtype=np.uint8)
+        # Even without mask reads or a finite-value scan, cancellation during
+        # the final native read must not return a completed RGB window.
+        with self.assertRaises(TraceCancelled):
+            read_rgb(
+                dataset,
+                source,
+                (0, 2, 0, 2),
+                lambda: band.ReadAsArray.call_count == 3,
+            )
 
     def test_cache_reuses_allocation_color_source_and_exact_search_view(self):
         values = np.ones((6, 6)) * 10
