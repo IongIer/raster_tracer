@@ -11,6 +11,8 @@ Changes since upstream Raster Tracer 0.3.3:
 - Save color, snapping, smoothing, and preview preferences.
 - Add `T` to sample the color under the pointer and `D` for dense straight lines.
 - Make the drawn line match the preview, including smoothing and snapping.
+- Use QGIS geometry operations to extend long lines faster and reduce redundant
+  vertices in smoothed paths.
 - Cancel pending traces when layers or tracing settings change, keeping earlier
   segments.
 - Prevent `B` from undoing unrelated edits.

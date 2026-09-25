@@ -115,6 +115,15 @@ Large reads, cost preparation, search, and smoothing run in a background task.
 One scheduler survives dock close/reopen so cancelled workers drain before
 replacement work starts. Python search can still contend for the GIL.
 
+With smoothing enabled, a moving average is followed by QGIS's line simplifier
+with a distance tolerance of 0.25 raster pixels. Both operations preserve the
+segment endpoints, and previews and saved paths use the same result.
+
+Extending a 2D multipart line uses QGIS's native geometry append. Earlier
+geometries remain available to QGIS undo, so memory can grow substantially when
+many segments extend one long feature. Finishing a line releases the tracing
+cache and markers but preserves the layer's undo history.
+
 ## Continuous integration
 
 The [workflow](../.github/workflows/compatibility.yml) runs lint and formatting

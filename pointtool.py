@@ -13,6 +13,7 @@ from qgis.core import (
     QgsFeature,
     QgsFeatureRequest,
     QgsGeometry,
+    QgsLineString,
     QgsMessageLog,
     QgsPointXY,
     QgsProject,
@@ -58,6 +59,30 @@ class TracingModes(Enum):
 
     def is_tracing(self):
         return self == TracingModes.PATH
+
+
+def append_path_points(existing, points):
+    """Extend the final line, retaining the existing geometry for QGIS undo."""
+    if existing.wkbType() == Qgis.WkbType.MultiLineString:
+        geometry = QgsGeometry(existing)
+        multi = geometry.get()  # Detach before modifying the shared geometry.
+        if multi.numGeometries() == 0:
+            raise ValueError("Target line is empty")
+        line = multi.lineStringN(multi.numGeometries() - 1)
+        if line.numPoints() == 0:
+            raise ValueError("Target line is empty")
+        seam = QgsPointXY(line.endPoint())
+        tail = points[1:] if seam == points[0] else points
+        # Native append may replace its shared endpoint. Anchor it at the exact
+        # old coordinate, including when QgsPointXY equality is only approximate.
+        line.append(QgsLineString([seam, *tail]))
+        return geometry
+    # Retain the existing curve segmentization and Z/M conversion behavior.
+    lines = existing.asMultiPolyline()
+    if not lines or not lines[-1]:
+        raise ValueError("Target line is empty")
+    lines[-1].extend(points[1:] if lines[-1][-1] == points[0] else points)
+    return QgsGeometry.fromMultiPolylineXY(lines)
 
 
 class RasterScribePointTool(QgsMapToolEdit):
@@ -692,11 +717,7 @@ class RasterScribePointTool(QgsMapToolEdit):
                 feature = layer.getFeature(request.feature_id)
                 if not feature.isValid():
                     raise ValueError("Target feature disappeared")
-                lines = feature.geometry().asMultiPolyline()
-                if not lines or not lines[-1]:
-                    raise ValueError("Target line is empty")
-                lines[-1].extend(points[1:] if lines[-1][-1] == points[0] else points)
-                geometry = QgsGeometry.fromMultiPolylineXY(lines)
+                geometry = append_path_points(feature.geometry(), points)
             # Validate again immediately before editing, after all transforms.
             if not self._valid_request(request):
                 self._finish_pending(request.request_id)

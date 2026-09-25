@@ -4,7 +4,7 @@ import random
 import unittest
 
 from ..astar import _find_path_core
-from ..line_simplification import simplify, smooth
+from ..line_simplification import smooth
 
 
 class Grid:
@@ -111,10 +111,9 @@ class SearchTest(unittest.TestCase):
 class PostprocessTest(unittest.TestCase):
     def test_short_inputs_and_ownership(self):
         for path in ([], [(1, 2)], [(1, 2), (3, 4)]):
-            for function in (smooth, simplify):
-                result = function(path)
-                self.assertEqual(result, path)
-                self.assertIsNot(result, path)
+            result = smooth(path)
+            self.assertEqual(result, path)
+            self.assertIsNot(result, path)
         path = [(0, 0), (1, 2), (2, 1)]
         self.assertEqual(smooth(path, 0), path)
 
@@ -133,23 +132,8 @@ class PostprocessTest(unittest.TestCase):
             for x, y in zip(a, b):
                 self.assertAlmostEqual(x, y)
         self.assertEqual(path[2], (0, 2))
-        self.assertGreater(len(simplify(smooth(path, 5))), 2)
         for n in range(3, 11):
             bend = [(i, (i - n // 2) ** 2) for i in range(n)]
             result = smooth(bend, 5)
             self.assertEqual(result, list(reversed(smooth(list(reversed(bend)), 5))))
             self.assertEqual((result[0], result[-1]), (bend[0], bend[-1]))
-
-    def test_angles_duplicates_uturns_and_wrap(self):
-        for path in (
-            [(0, 0), (0, 1), (0, 2)],
-            [(0, 0), (1, 0), (2, 0)],
-            [(0, 0), (0, 0), (1, 0), (2, 0)],
-            [(2, 0), (1, 0.001), (0, 0)],
-        ):
-            original = list(path)
-            self.assertEqual(simplify(path), [path[0], path[-1]])
-            self.assertEqual(path, original)
-        path = [(0, 0), (1, 0), (0, 0)]
-        self.assertEqual(simplify(path), path)
-        self.assertEqual(simplify([(0, 0), (1, 0), (1, 1)]), [(0, 0), (1, 0), (1, 1)])

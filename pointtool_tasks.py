@@ -2,13 +2,21 @@
 
 import cProfile
 import io
+import math
 import os
 import pstats
 import time
 import weakref
 from dataclasses import dataclass, replace
 
-from qgis.core import Qgis, QgsApplication, QgsMessageLog, QgsTask
+from qgis.core import (
+    Qgis,
+    QgsApplication,
+    QgsGeometry,
+    QgsLineString,
+    QgsMessageLog,
+    QgsTask,
+)
 
 from .astar import _find_path_core
 from .exceptions import (
@@ -17,11 +25,31 @@ from .exceptions import (
     ResourceLimitError,
     TraceCancelled,
 )
-from .line_simplification import simplify, smooth
+from .line_simplification import smooth
 from .pointtool_raster import check_cancel, prepare_snapshot, validate_budget
 from .pointtool_session import TraceResult
 
 PROFILE_ENABLED = os.environ.get("RASTER_SCRIBE_PROFILE", "0") == "1"
+
+
+def postprocess_path(path):
+    """Keep the moving mean, then simplify within a quarter pixel in QGIS."""
+    points = smooth(path, size=5)
+    if len(points) <= 2:
+        return tuple(points)
+    # Owned entirely by this worker; no layer, project or GUI objects are used.
+    line = QgsLineString(points).simplifyByDistance(0.25)
+    if line is None:
+        raise ValueError("Path simplification failed")
+    result = [(point.x(), point.y()) for point in QgsGeometry(line).asPolyline()]
+    if len(result) < 2 or not all(math.isfinite(v) for point in result for v in point):
+        raise ValueError("Path simplification returned invalid coordinates")
+    # Native simplification can remove the start of a closed line. Keep its
+    # remaining vertices as well as the original anchor in that case.
+    if points[0] == points[-1] and result[0] != points[0]:
+        result.insert(0, points[0])
+    result[0], result[-1] = points[0], points[-1]
+    return tuple(result)
 
 
 def execute_request(work, snapshot=None, cancel=lambda: False):
@@ -39,7 +67,7 @@ def execute_request(work, snapshot=None, cancel=lambda: False):
         check_cancel(cancel)
         started = time.perf_counter()
         path = tuple(result.path or ())
-        processed = tuple(simplify(smooth(path, size=5))) if work.smoothing else path
+        processed = postprocess_path(path) if work.smoothing else path
         timings["postprocess"] = time.perf_counter() - started
         check_cancel(cancel)
         return TraceResult(
