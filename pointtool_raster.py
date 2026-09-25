@@ -65,6 +65,7 @@ def validate_budget(bounds, live_bytes=0):
         raise InvalidRasterError("Empty raster window")
     if pixels > MAX_SEARCH_PIXELS:
         raise ResourceLimitError("Search pixel limit")
+    # Budget for float64 RGB even when Byte bands use compact storage:
     # RGB float64 (24), validity (1), costs (8), temporary GDAL/native band
     # and mask/conversion headroom (9), bounded float64 computation scratch.
     if (
@@ -107,7 +108,9 @@ def read_rgb(dataset, source, bounds, cancel):
         array = band.ReadAsArray(left, top, shape[1], shape[0]) if band else None
         if array is None or array.shape != shape or np.iscomplexobj(array):
             raise InvalidRasterError("Malformed RGB band read")
-        converted = np.asarray(array, dtype=np.float64)
+        converted = (
+            array if array.dtype == np.uint8 else np.asarray(array, dtype=np.float64)
+        )
         del array
         mask_band = band.GetMaskBand()
         mask = (
@@ -148,7 +151,8 @@ def color_cost(bands, valid, color, cancel=lambda: False):
         scratch = np.zeros(end - offset, dtype=np.float64)
         with np.errstate(over="ignore", invalid="ignore"):
             for values, target in zip(flat_bands, color):
-                delta = np.subtract(values[offset:end], target)
+                # Promote before subtraction so Byte values cannot wrap around.
+                delta = np.subtract(values[offset:end], target, dtype=np.float64)
                 np.square(delta, out=delta)
                 scratch += delta
                 del delta
