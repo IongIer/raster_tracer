@@ -5,6 +5,7 @@ import random
 from unittest.mock import patch
 
 from qgis.core import (
+    Qgis,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsFeature,
@@ -132,6 +133,7 @@ class SnappingOptimizationTest(TraceFixture):
         self.iface.setActiveLayer(layer)
         fid = self.add_feature([(10, 60.0006), (10.001, 60)], layer)
         geometry = layer.getFeature(fid).geometry()
+        original = bytes(geometry.asWkb())
         self.assertEqual(geometry.closestVertex(QgsPointXY(10, 60))[1], 0)
         transform = QgsCoordinateTransform(
             layer.crs(), self.project.crs(), self.project
@@ -146,6 +148,7 @@ class SnappingOptimizationTest(TraceFixture):
             self.tool.snap_to_itself(center.x(), center.y(), 150),
             (east.x(), east.y()),
         )
+        self.assertEqual(bytes(layer.getFeature(fid).geometry().asWkb()), original)
         # Symmetric east/west offsets at longitude zero have equal map distances:
         # the transformed path also chooses the last vertex within the feature.
         self.assertTrue(
@@ -157,6 +160,39 @@ class SnappingOptimizationTest(TraceFixture):
             self.tool.snap_to_itself(center.x(), center.y(), 150),
             (east.x(), east.y()),
         )
+
+    def test_transformed_draft_snapping_preserves_geometry_and_dimensions(self):
+        self.vector.setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+        geometry = QgsGeometry.fromWkt(
+            "MULTILINESTRING ZM ((10 60.0006 7 2,10.001 60 8 3),"
+            "(10.002 60 9 4,10.003 60 10 5))"
+        )
+        original = bytes(geometry.asWkb())
+        self.tool.session.target_id = self.vector.id()
+        self.tool.session.geometry = geometry
+        self.addCleanup(self.tool.session.reset)
+        transform = QgsCoordinateTransform(
+            self.vector.crs(), self.project.crs(), self.project
+        )
+        center = transform.transform(10, 60)
+        east = transform.transform(10.001, 60)
+        for _ in range(2):
+            self.assertEqual(
+                self.tool.snap_to_itself(center.x(), center.y(), 150),
+                (east.x(), east.y()),
+            )
+            self.assertEqual(bytes(self.tool.session.geometry.asWkb()), original)
+        self.assertEqual(self.vector.featureCount(), 0)
+
+    def test_failed_geometry_transform_does_not_snap_in_layer_coordinates(self):
+        self.vector.setCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+        self.add_feature([(0.001, 0), (0.002, 0)])
+        with patch.object(
+            QgsGeometry,
+            "transform",
+            return_value=Qgis.GeometryOperationResult.InvalidBaseGeometry,
+        ):
+            self.assertEqual(self.tool.snap_to_itself(0, 0, 500), (0, 0))
 
     def test_feature_ties_geometry_edit_undo_delete_and_rollback(self):
         first = self.add_feature([(1001, 1991), (999, 1991)])

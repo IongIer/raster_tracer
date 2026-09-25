@@ -558,21 +558,20 @@ class RasterScribePointTool(QgsMapToolEdit):
                 # A draft behaves like the newest feature for equal distances.
                 candidates = chain(candidates, ((-math.inf, draft),))
             for feature_id, geometry in candidates:
-                if to_map.isShortCircuited():
-                    vertex, index, _, _, distance = geometry.closestVertex(target)
-                    if index >= 0 and 0 <= distance <= threshold:
-                        key = (distance, feature_id, -index)
-                        if best is None or key < best[0]:
-                            best = key, as_xy(vertex)
-                    continue
-                # Transform every vertex before comparing distances; layer-space
-                # nearest vertices can differ under anisotropic CRS transforms.
-                for index, vertex in enumerate(geometry.vertices()):
-                    sx, sy = as_xy(to_map.transform(QgsPointXY(vertex)))
-                    distance = (sx - x) ** 2 + (sy - y) ** 2
+                if not to_map.isShortCircuited():
+                    # Compare in map units without changing the layer or draft.
+                    # Layer-space nearest vertices can differ after projection.
+                    geometry = QgsGeometry(geometry)
+                    if (
+                        geometry.transform(to_map)
+                        != Qgis.GeometryOperationResult.Success
+                    ):
+                        continue
+                vertex, index, _, _, distance = geometry.closestVertex(target)
+                if index >= 0 and 0 <= distance <= threshold:
                     key = (distance, feature_id, -index)
-                    if distance <= threshold and (best is None or key < best[0]):
-                        best = key, (sx, sy)
+                    if best is None or key < best[0]:
+                        best = key, as_xy(vertex)
             return best[1] if best is not None else (x, y)
         except Exception:
             return x, y
