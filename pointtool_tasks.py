@@ -26,10 +26,12 @@ from .exceptions import (
     TraceCancelled,
 )
 from .line_simplification import smooth
+from .pointtool_hfm import refine_path
 from .pointtool_raster import (
     check_cancel,
     cost_cache_key,
     prepare_snapshot,
+    retained_array_bytes,
     validate_budget,
 )
 from .pointtool_session import TraceResult
@@ -60,6 +62,7 @@ def postprocess_path(path):
 def execute_request(work, snapshot=None, cancel=lambda: False):
     """All large reads, costs, search and smoothing execute in the worker."""
     timings = {}
+    supplied_snapshot = snapshot
     try:
         snapshot, graph, valid, timings = prepare_snapshot(work, snapshot, cancel)
         top, _, left, _ = work.bounds
@@ -70,8 +73,29 @@ def execute_request(work, snapshot=None, cancel=lambda: False):
             search=result.profile_stats["duration"], nodes=result.profile_stats["nodes"]
         )
         check_cancel(cancel)
-        started = time.perf_counter()
         path = tuple(result.path or ())
+        cost = result.cost
+        if work.enhanced_tracing and result.status == "success":
+            try:
+                path, hfm_timings = refine_path(
+                    graph,
+                    valid,
+                    start,
+                    goal,
+                    path,
+                    cancel,
+                    live_bytes=retained_array_bytes(supplied_snapshot, snapshot),
+                )
+            except ValueError as error:
+                # Input pixels have already passed preparation/coarse search.
+                # An extraction failure is a failed segment, not a claim
+                # that the user's valid raster or editable layer is invalid.
+                raise RuntimeError(str(error)) from error
+            timings.update(hfm_timings)
+            # The coarse pixel objective is not the refined elastica objective.
+            cost = None
+        check_cancel(cancel)
+        started = time.perf_counter()
         processed = postprocess_path(path) if work.smoothing else path
         timings["postprocess"] = time.perf_counter() - started
         check_cancel(cancel)
@@ -79,7 +103,7 @@ def execute_request(work, snapshot=None, cancel=lambda: False):
             work.request_id,
             result.status,
             path,
-            result.cost,
+            cost,
             (top, left),
             processed,
             snapshot,
@@ -240,10 +264,17 @@ class TraceTaskController:
         work = job.request.worker_input()
         if snapshot is not None and not snapshot.covers(work.source, work.bounds):
             snapshot = None
-        # Unused cache is evicted before any new allocation. On fixed-color
-        # changes drop the old cost but retain reusable immutable RGB/mask.
-        if snapshot is not None and work.color is not None:
-            if snapshot.cost_key != cost_cache_key(True, work.color):
+        # Drop incompatible costs before allocation, including an algorithm
+        # switch with automatic color, while keeping immutable RGB/mask data.
+        if snapshot is not None and snapshot.cost is not None:
+            key = cost_cache_key(
+                work.color is not None, work.color, work.enhanced_tracing
+            )
+            if (
+                snapshot.cost_key is None
+                or snapshot.cost_key[2] != key[2]
+                or (work.color is not None and snapshot.cost_key != key)
+            ):
                 snapshot = replace(snapshot, cost=None, cost_key=None)
         self._running = job
         job.cache_generation = self._cache_generation

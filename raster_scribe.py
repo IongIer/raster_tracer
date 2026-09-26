@@ -260,6 +260,7 @@ class RasterScribe:
             self.turn_off_snap,
             ensure_trace_color_enabled=self.ensure_trace_color_enabled,
             set_trace_color=self.set_trace_color_from_tool,
+            toggle_enhanced_tracing=self.toggle_enhanced_tracing,
             scheduler=self.task_controller,
             shortcuts=self.shortcuts,
         )
@@ -307,6 +308,7 @@ class RasterScribe:
                 settings.value("RasterScribe/snap2/tolerance"), dock.SpinBoxSnap
             ),
             "smooth": boolean("RasterScribe/trace/smooth", True),
+            "enhanced_tracing": boolean("RasterScribe/trace/enhanced", False),
             "open_attributes": boolean(
                 "RasterScribe/attributes/open_after_finish", False
             ),
@@ -325,6 +327,7 @@ class RasterScribe:
             (dock.checkBoxSnap2, "setChecked", prefs["snap2"]),
             (dock.SpinBoxSnap, "setValue", prefs["snap2_value"]),
             (dock.checkBoxSmooth, "setChecked", prefs["smooth"]),
+            (dock.checkBoxEnhancedTracing, "setChecked", prefs["enhanced_tracing"]),
             (dock.checkBoxOpenAttributes, "setChecked", prefs["open_attributes"]),
         )
         for widget, method, value in updates:
@@ -333,6 +336,7 @@ class RasterScribe:
         self.checkBoxSnap_changed()
         self.checkBoxSnap2_changed()
         self.checkBoxSmooth_changed()
+        self.enhanced_tracing_changed()
         self.checkBoxColor_changed()
         self.open_attributes_changed()
         self.preview_enabled_changed()
@@ -357,6 +361,7 @@ class RasterScribe:
             (dock.checkBoxSnap.stateChanged, self.checkBoxSnap_changed),
             (dock.mQgsSpinBox.valueChanged, self.checkBoxSnap_changed),
             (dock.checkBoxSmooth.stateChanged, self.checkBoxSmooth_changed),
+            (dock.checkBoxEnhancedTracing.toggled, self.enhanced_tracing_changed),
             (dock.checkBoxSnap2.stateChanged, self.checkBoxSnap2_changed),
             (dock.SpinBoxSnap.valueChanged, self.checkBoxSnap2_changed),
             (dock.checkBoxPreview.stateChanged, self.preview_enabled_changed),
@@ -561,6 +566,15 @@ class RasterScribe:
         self.tool_identify.smooth_line = is_checked
         settings = QSettings()
         settings.setValue("RasterScribe/trace/smooth", is_checked)
+
+    def enhanced_tracing_changed(self):
+        enabled = self.dockwidget.checkBoxEnhancedTracing.isChecked()
+        self.tool_identify.enhanced_tracing = enabled
+        QSettings().setValue("RasterScribe/trace/enhanced", enabled)
+
+    def toggle_enhanced_tracing(self):
+        if self.dockwidget is not None:
+            self.dockwidget.checkBoxEnhancedTracing.toggle()
 
     def checkBoxSnap_changed(self):
         settings = QSettings()

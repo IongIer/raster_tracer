@@ -13,6 +13,7 @@ class RasterScribeShortcuts:
 DEFAULT_BINDINGS = {
     "toggle_straight": "A",
     "toggle_dense_straight": "D",
+    "toggle_enhanced_tracing": "E",
     "sample_color": "T",
     "toggle_color_snap": "N",
     "undo_segment": "B",
@@ -61,6 +62,9 @@ def action_descriptions():
         "toggle_straight": RasterScribeShortcuts.tr("Toggle straight-line mode."),
         "toggle_dense_straight": RasterScribeShortcuts.tr(
             "Toggle straight-line mode with extra vertices."
+        ),
+        "toggle_enhanced_tracing": RasterScribeShortcuts.tr(
+            "Toggle enhanced tracing (slower)."
         ),
         "sample_color": RasterScribeShortcuts.tr(
             "Sample a color under the pointer and return to tracing."
@@ -146,6 +150,14 @@ class ShortcutSettings(QObject):
                 )
             except ValueError:
                 bindings[action] = default
+        # Preserve an older profile's custom E binding when adding this action.
+        enhanced = "toggle_enhanced_tracing"
+        if not self.settings.contains(SETTINGS_PREFIX + enhanced) and any(
+            binding == bindings[enhanced]
+            for action, binding in bindings.items()
+            if action != enhanced
+        ):
+            bindings[enhanced] = ""
         # Malformed or duplicate saved bindings must not make an action ambiguous.
         self.bindings = (
             dict(DEFAULT_BINDINGS) if validation_errors(bindings, "Shift") else bindings

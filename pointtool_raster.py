@@ -21,7 +21,7 @@ from .utils import RasterSampler
 MAX_SEARCH_PIXELS = 8_388_608
 MAX_ARRAY_BYTES = 256 * 1024 * 1024
 SCRATCH_PIXELS = 65_536
-SCRATCH_BYTES = SCRATCH_PIXELS * 32
+SCRATCH_BYTES = SCRATCH_PIXELS * 48
 # Reserve the worst-case GUI small-read cache, replacement, and snap scratch.
 # A 99-pixel radius is at most 199x199 pixels, independent of trace windows.
 CURSOR_RESERVE_BYTES = 6 * 1024 * 1024
@@ -139,7 +139,7 @@ def read_rgb(dataset, source, bounds, cancel):
     return tuple(bands), valid
 
 
-def color_cost(bands, valid, color, cancel=lambda: False):
+def color_cost(bands, valid, color, cancel=lambda: False, *, soft_darkcap=False):
     if len(color) != 3 or not all(np.isfinite(c) for c in color):
         raise InvalidRasterError("Nonfinite trace color")
     cost = np.empty(valid.shape, dtype=np.int64)
@@ -155,10 +155,13 @@ def color_cost(bands, valid, color, cancel=lambda: False):
         end = min(cost.size, offset + SCRATCH_PIXELS)
         mask = flat_valid[offset:end]
         scratch = np.zeros(end - offset, dtype=np.float64)
+        darkness = np.zeros(end - offset, dtype=np.float64) if soft_darkcap else None
         with np.errstate(over="ignore", invalid="ignore"):
             for values, target in zip(flat_bands, color):
                 # Promote before subtraction so Byte values cannot wrap around.
                 delta = np.subtract(values[offset:end], target, dtype=np.float64)
+                if darkness is not None:
+                    darkness += delta
                 np.square(delta, out=delta)
                 scratch += delta
                 del delta
@@ -170,9 +173,27 @@ def color_cost(bands, valid, color, cancel=lambda: False):
             or np.any(scratch < 0)
         ):
             raise InvalidRasterError("Color cost outside int64 range")
+        if darkness is not None:
+            dark = (darkness <= -90) & (scratch > 2048)
+            scratch[dark] = np.rint(2048 + 0.1 * (scratch[dark] - 2048))
         flat_cost[offset:end] = scratch
     cost.setflags(write=False)
     return cost
+
+
+def retained_array_bytes(*snapshots):
+    """Count the union of array owners kept alive by overlapping snapshots."""
+    allocations = {}
+    for snapshot in snapshots:
+        if snapshot is None:
+            continue
+        for array in (*snapshot.bands, snapshot.valid, snapshot.cost):
+            if array is None:
+                continue
+            while isinstance(array.base, np.ndarray):
+                array = array.base
+            allocations[id(array)] = array.nbytes
+    return sum(allocations.values())
 
 
 @dataclass(frozen=True)
@@ -188,14 +209,7 @@ class RasterSnapshot:
     def nbytes(self):
         # Views retain their backing arrays, including a cropped prefetch cache.
         # Count each allocation once even if several views share it.
-        allocations = {}
-        for array in (*self.bands, self.valid, self.cost):
-            if array is None:
-                continue
-            while isinstance(array.base, np.ndarray):
-                array = array.base
-            allocations[id(array)] = array.nbytes
-        return sum(allocations.values())
+        return retained_array_bytes(self)
 
     def covers(self, source, bounds):
         a, b, c, d = self.bounds
@@ -209,9 +223,14 @@ class RasterSnapshot:
         )
 
 
-def cost_cache_key(fixed_color, color):
+def cost_cache_key(fixed_color, color, enhanced_tracing=False):
     """Identify the color policy, target and arithmetic used by cached costs."""
-    return (fixed_color, color, "float64/int64/masked-v1")
+    arithmetic = (
+        "soft-darkcap2048-slope0.1-v1"
+        if enhanced_tracing
+        else "float64/int64/masked-v1"
+    )
+    return (fixed_color, color, arithmetic)
 
 
 def prepare_snapshot(work, cached, cancel):
@@ -271,7 +290,7 @@ def prepare_snapshot(work, cached, cancel):
         if work.color is not None
         else tuple(float(b[goal]) for b in snapshot.bands)
     )
-    key = cost_cache_key(work.color is not None, color)
+    key = cost_cache_key(work.color is not None, color, work.enhanced_tracing)
     cost_hit = snapshot.cost is not None and snapshot.cost_key == key
     started = time.perf_counter()
     if not cost_hit:
@@ -288,7 +307,13 @@ def prepare_snapshot(work, cached, cancel):
         ):
             raise ResourceLimitError("Cost snapshot budget")
         try:
-            costs = color_cost(snapshot.bands, snapshot.valid, color, cancel)
+            costs = color_cost(
+                snapshot.bands,
+                snapshot.valid,
+                color,
+                cancel,
+                soft_darkcap=work.enhanced_tracing,
+            )
         except InvalidRasterError:
             if snapshot.bounds == work.bounds:
                 raise
@@ -310,7 +335,13 @@ def prepare_snapshot(work, cached, cancel):
         if costs is None:
             # Leave the exception handler first: its traceback retains the
             # failed full-sized cost allocation until the exception is cleared.
-            costs = color_cost(snapshot.bands, snapshot.valid, color, cancel)
+            costs = color_cost(
+                snapshot.bands,
+                snapshot.valid,
+                color,
+                cancel,
+                soft_darkcap=work.enhanced_tracing,
+            )
         snapshot = RasterSnapshot(
             snapshot.source, snapshot.bounds, snapshot.bands, snapshot.valid, costs, key
         )

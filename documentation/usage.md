@@ -139,6 +139,22 @@ Press `D` for straight segments with evenly spaced extra vertices, at most
 5 units apart in the vector layer's coordinate system. A segment shorter than
 5 units gets a midpoint. Press `D` again to return to tracing.
 
+### Trace through text and line crossings
+
+Enable **Enhanced tracing (slower)**, or press `E`, to use contour continuity
+when following interrupted lines. It uses more processing and can make the
+preview slower, especially on less powerful computers. The standard tracer is
+the default; the enhanced setting is saved between sessions.
+
+Switching clears the preview and cancels any segment still being calculated,
+including a pending click. Accepted segments and the last anchor stay in place.
+A new preview uses the selected method; click again to accept it. You can switch
+methods within one line. Straight and dense straight-line modes still draw
+direct segments, and **Smooth lines** remains a separate output setting.
+
+Enhanced tracing can still follow the wrong stroke or round a sharp bend.
+Check the preview and use closer clicks or straight-line mode where needed.
+
 ### Cancel or finish a line
 
 Press Escape to cancel the segment being calculated. Earlier segments remain.
@@ -167,12 +183,13 @@ checking for unsaved edits.
 | Snap to nearest | Move the end point toward the chosen color within the given radius, in raster pixels. Requires Trace color. Maximum radius: 99 pixels. |
 | Snap to vector layer | Snap to a vertex in the active vector layer or current draft, within the given distance in canvas CRS units. Takes precedence over color snapping. |
 | Smooth lines | Smooth the traced path. The preview uses the same smoothing. |
+| Enhanced tracing (slower) | Use more processing to follow contours through text and line crossings. `E` toggles the method. |
 | Preview path | Show the proposed path while moving the pointer. The adjacent button sets its color. |
 | Preview width | Set the width of the preview line. |
 | Open attributes after finishing | Open the new feature's form after finishing with right-click. The configured modifier reverses the choice once. |
 | Controls… | View and customize keyboard controls and the finish-form modifier; review possible QGIS shortcut conflicts. |
 
-Color, snapping, smoothing, preview, and **Open attributes after finishing**
+Color, snapping, smoothing, enhanced tracing, preview, and **Open attributes after finishing**
 preferences are saved between sessions.
 
 Default keyboard and mouse controls:
@@ -184,6 +201,7 @@ Default keyboard and mouse controls:
 | Shift+right-click | Finish the line and reverse the form-opening choice for this line only. |
 | `A` | Toggle straight-line mode. |
 | `D` | Toggle straight-line mode with extra vertices. |
+| `E` | Toggle enhanced tracing. |
 | `T` | Sample a color under the pointer and return to tracing. |
 | `N` | Toggle color snapping. |
 | `B` | Cancel pending work, undo the last tracing step, or remove the starting point. |

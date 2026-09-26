@@ -7,6 +7,9 @@ Changes from [Raster Tracer 0.3.3](https://github.com/mkondratyev85/raster_trace
 ### Tracing
 
 - Show a path preview before clicking, with adjustable color and width.
+- Add optional **Enhanced tracing (slower)** for contour continuity through
+  interruptions, with a saved setting and configurable `E` shortcut. Switching
+  cancels unaccepted work and refreshes the preview while keeping the draft.
 - Save color, snapping, smoothing, preview, and finish-form preferences.
 - Add `T` to sample the color under the pointer and `D` for dense straight lines.
 - Make the drawn line match the preview, including smoothing and snapping.

@@ -14,9 +14,12 @@ about=Raster Scribe is an independently maintained fork of Raster Tracer by Mikh
     with QGIS shortcut conflict warnings and a saved finish-form modifier,
     scratch-layer creation, and support for QGIS 3.40+ and QGIS 4.
     It also revises cancellation, undo, snapping, and handling of invalid raster pixels.
+    Optional enhanced tracing follows contour continuity through interruptions, using more processing.
+    Toggle it with E by default; the choice is saved and the standard tracer remains the default.
     A GDAL-readable RGB raster and an editable MultiLineString or MultiCurve layer are required;
     the plugin can create a temporary line layer matching the raster's CRS.
     Rotated or skewed raster mappings are unsupported.
+    License: GNU GPL version 3 or later. Original component notices are preserved in the package.
     Original project: https://github.com/mkondratyev85/raster_tracer
 
 homepage=https://github.com/IongIer/raster_tracer#readme
@@ -27,6 +30,7 @@ tags=digitizing, raster, tracing
 icon=icon.png
 
 changelog=Unreleased -- Introduce Raster Scribe with a blue icon and a Raster menu entry. It can be installed alongside Raster Tracer, with separate preferences.
+    Enhanced tracing -- Add an optional Python contour solver and configurable E shortcut; switching cancels pending work and refreshes the preview.
     Fork changes -- Add previews, windowed raster sampling, saved preferences, configurable controls with shortcut conflict warnings, optional feature forms with field creation, scratch-layer creation, extra shortcuts, QGIS 4 support, and tracing fixes. See CHANGELOG.md in the repository.
     Upstream 0.3.3 -- Fix QGIS 3.30 compatibility.
 

@@ -12,6 +12,7 @@ developed by Mikhail Kondratyev. The fork is maintained by
 ## Differences from Raster Tracer
 
 - Live path previews, with adjustable color and width.
+- Optional enhanced tracing for interrupted contours, toggled with `E`.
 - Trace large rasters without loading the whole image into memory.
 - Saved color, snapping, smoothing, preview, and finish-form preferences.
 - Shortcuts for sampling a color and drawing a straight line with extra vertices.
@@ -80,6 +81,16 @@ this fork's issue tracker, with the QGIS version and steps to reproduce them.
 
 ## License and credits
 
-See [LICENSE](LICENSE) and the notices in the source files for licensing terms.
+Raster Scribe as a combined plugin is licensed under **GNU GPL version 3 or
+later (GPL-3.0-or-later)**. See [LICENSE](LICENSE) for the full text and
+[NOTICE.txt](NOTICE.txt) for component attribution and licensing details.
+
+Raster Tracer's original MIT notice is preserved in NOTICE.txt, alongside
+HamiltonFastMarching's original notices and attribution. Inherited GPL version
+2 or later source headers are retained; the upstream grants remain attached
+to their respective material.
+
+Enhanced tracing adapts Jean-Marie Mirebeau's HamiltonFastMarching solver in
+Python under GPL version 3 or later and uses QGIS's NumPy.
 
 The blue icon is adapted from Raster Tracer's original icon.

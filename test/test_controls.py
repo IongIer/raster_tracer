@@ -24,6 +24,7 @@ class ControlsTest(TraceFixture):
             for key in (
                 Qt.Key.Key_A,
                 Qt.Key.Key_D,
+                Qt.Key.Key_E,
                 Qt.Key.Key_B,
                 Qt.Key.Key_Escape,
             ):
@@ -32,6 +33,7 @@ class ControlsTest(TraceFixture):
                         QKeyEvent(QEvent.Type.KeyPress, key, modifier)
                     )
                     self.assertEqual(self.tool.tracing_mode, TracingModes.PATH)
+                    self.assertFalse(self.tool.enhanced_tracing)
                     self.assertTrue(self.tool.tracking_is_active)
                     self.assertFalse(submitted[0].cancelled)
         self.key(Qt.Key.Key_Escape)
@@ -83,9 +85,10 @@ class ControlsTest(TraceFixture):
         try:
             dialog.show()
             editor.setFocus()
-            QTest.keyClicks(editor, "adtbn")
-            self.assertEqual(editor.text(), "adtbn")
+            QTest.keyClicks(editor, "adetbn")
+            self.assertEqual(editor.text(), "adetbn")
             self.assertEqual(self.tool.tracing_mode, TracingModes.PATH)
+            self.assertFalse(self.tool.enhanced_tracing)
             self.assertEqual(len(self.tool.session.anchors), 1)
         finally:
             dialog.close()

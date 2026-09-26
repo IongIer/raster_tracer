@@ -67,6 +67,7 @@ class WorkerRequest:
     goal: tuple
     color: Optional[tuple]
     smoothing: bool
+    enhanced_tracing: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ class TraceRequest:
     color: Optional[tuple]
     bounds: tuple
     screen_pos: Optional[tuple] = None
+    enhanced_tracing: bool = False
 
     @property
     def key(self):
@@ -99,6 +101,7 @@ class TraceRequest:
             self.smoothing,
             self.color,
             self.bounds,
+            self.enhanced_tracing,
         )
 
     def worker_input(self):
@@ -110,6 +113,7 @@ class TraceRequest:
             self.goal.pixel,
             self.color,
             self.smoothing,
+            self.enhanced_tracing,
         )
 
 

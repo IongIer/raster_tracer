@@ -70,3 +70,23 @@ class ShortcutSettingsTest(unittest.TestCase):
                 Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier
             )
         )
+
+    def test_new_enhanced_default_preserves_existing_custom_e_binding(self):
+        self.settings.setValue(SETTINGS_PREFIX + "sample_color", "E")
+        self.settings.setValue(SETTINGS_PREFIX + "undo_segment", "Ctrl+Z")
+        loaded = ShortcutSettings(settings=self.settings)
+        self.assertEqual(loaded.bindings["sample_color"], "E")
+        self.assertEqual(loaded.bindings["undo_segment"], "Ctrl+Z")
+        self.assertEqual(loaded.bindings["toggle_enhanced_tracing"], "")
+        self.assertEqual(
+            loaded.action(
+                QKeyEvent(
+                    QEvent.Type.KeyPress, Qt.Key.Key_E, Qt.KeyboardModifier.NoModifier
+                )
+            ),
+            "sample_color",
+        )
+        loaded.apply(loaded.bindings, loaded.finish_modifier)
+        self.assertEqual(
+            ShortcutSettings(settings=self.settings).bindings, loaded.bindings
+        )

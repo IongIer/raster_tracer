@@ -89,6 +89,7 @@ Use default bindings for the tracing checks unless a row calls for customization
 | Clear the source raster, select an unsupported layer, and stop or start editing | **Start tracing** is enabled only with a suitable raster and an active editable MultiLineString or MultiCurve layer; its tooltip explains missing prerequisites. |
 | Switch to pan or identify, then click **Start tracing** again; also click it during an active draft | Tracing resumes with the same settings; clicking while tracing keeps the draft intact. |
 | Use `A`, `D`, `T`, and `N`; repeat with Layers-panel focus during a trace | Modes, sampled color, and color snapping change as described in the usage guide. |
+| Toggle **Enhanced tracing (slower)** with its checkbox and `E`, including while a preview or clicked segment is calculating | The checkbox and saved choice agree; old work cannot draw or commit; accepted segments stay in place and a new preview uses the selected method. Straight/dense modes stay selected. |
 | Open **Controls…** and compare the listed controls with the tool | Every keyboard and mouse action is described, including the chosen finish-form modifier and the focus requirement. |
 | Assign a modified key in **Controls…**, inspect the preview, and click **Apply** | The preview describes the proposed key; after Apply, only the new combination runs that action on the canvas and in the Layers panel during a draft. |
 | Clear a shortcut and apply; then restore defaults and apply | Clearing disables that action's keyboard shortcut; restoring defaults brings it back. |

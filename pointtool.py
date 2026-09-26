@@ -106,6 +106,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         set_trace_color=None,
         scheduler=None,
         shortcuts=None,
+        toggle_enhanced_tracing=None,
     ):
         super().__init__(canvas)
         self.iface = iface
@@ -126,11 +127,13 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.last_mouse_event_pos = None
         self._tracing_mode = TracingModes.PATH
         self._smooth_line = bool(smooth)
+        self._enhanced_tracing = False
         self.snap_tolerance = self.snap2_tolerance = None
         self.trace_color_value = None
         self.turn_off_snap = turn_off_snap
         self._enable_trace_color_cb = ensure_trace_color_enabled
         self._set_trace_color_cb = set_trace_color
+        self._toggle_enhanced_tracing_cb = toggle_enhanced_tracing
         self.task_controller = scheduler or TraceTaskController()
         self.raster_context = RasterTracingContext(self)
         self.rubber_band = QgsRubberBand(canvas, Qgis.GeometryType.Line)
@@ -195,6 +198,17 @@ class RasterScribePointTool(QgsMapToolEdit):
             self._semantic_changed()
 
     @property
+    def enhanced_tracing(self):
+        return self._enhanced_tracing
+
+    @enhanced_tracing.setter
+    def enhanced_tracing(self, enabled):
+        enabled = bool(enabled)
+        if enabled != self._enhanced_tracing:
+            self._enhanced_tracing = enabled
+            self._semantic_changed()
+
+    @property
     def tracing_mode(self):
         return self._tracing_mode
 
@@ -242,6 +256,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.turn_off_snap = self._enable_trace_color_cb = self._set_trace_color_cb = (
             None
         )
+        self._toggle_enhanced_tracing_cb = None
         return True
 
     def _remove_pending_markers(self):
@@ -639,6 +654,7 @@ class RasterScribePointTool(QgsMapToolEdit):
             self.trace_color_value,
             bounds,
             as_xy(screen_pos) if screen_pos is not None else None,
+            enhanced_tracing=self.enhanced_tracing,
         )
 
     def accept_click(self, point, screen_pos=None):
@@ -851,6 +867,11 @@ class RasterScribePointTool(QgsMapToolEdit):
             self.tracing_mode = TracingModes.PATH if self.tracing_mode == mode else mode
         elif action == "toggle_color_snap":
             self.turn_off_snap()
+        elif action == "toggle_enhanced_tracing":
+            if self._toggle_enhanced_tracing_cb is not None:
+                self._toggle_enhanced_tracing_cb()
+            else:
+                self.enhanced_tracing = not self.enhanced_tracing
         elif action == "sample_color":
             self._handle_trace_color_shortcut()
         self.update_rubber_band()

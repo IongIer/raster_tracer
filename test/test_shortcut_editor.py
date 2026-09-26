@@ -70,6 +70,23 @@ class ShortcutEditorTest(unittest.TestCase):
         self.assertEqual(self.shortcuts.bindings["toggle_dense_straight"], "")
         self.assertIn("Unassigned", self.dialog.browser.toPlainText())
 
+    def test_enhanced_binding_can_be_edited_and_saved(self):
+        self.assertEqual(
+            self.dialog.editors["toggle_enhanced_tracing"].keySequence().toString(),
+            "E",
+        )
+        self.set_binding("toggle_enhanced_tracing", "Ctrl+E")
+        self.assertIn(
+            "Toggle enhanced tracing (slower).", self.dialog.browser.toPlainText()
+        )
+        self.dialog.apply_button.click()
+        self.assertEqual(
+            ShortcutSettings(settings=self.settings).bindings[
+                "toggle_enhanced_tracing"
+            ],
+            "Ctrl+E",
+        )
+
     def test_close_discards_edits_and_restore_defaults_needs_apply(self):
         self.set_binding("sample_color", "F9")
         self.dialog.close()
