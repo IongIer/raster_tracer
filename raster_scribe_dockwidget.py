@@ -37,7 +37,7 @@ FORM_CLASS, _ = uic.loadUiType(
 class RasterScribeDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     closingPlugin = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, shortcuts=None, main_window=None):
         """Constructor."""
         super(RasterScribeDockWidget, self).__init__(parent)
         # Set up the user interface from Designer.
@@ -48,12 +48,16 @@ class RasterScribeDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.setupUi(self)
         self.can_close = None
         self.controls_dialog = None
+        self.shortcuts = shortcuts
+        self.main_window = main_window
         self.controlsButton.clicked.connect(self.show_controls)
 
     def show_controls(self):
         """Keep one reference window so it can stay beside the map canvas."""
         if self.controls_dialog is None:
-            self.controls_dialog = create_controls_dialog(self)
+            self.controls_dialog = create_controls_dialog(
+                self, self.shortcuts, self.main_window
+            )
         self.controls_dialog.show()
         self.controls_dialog.raise_()
         self.controls_dialog.activateWindow()

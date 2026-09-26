@@ -26,8 +26,11 @@ Changes from [Raster Tracer 0.3.3](https://github.com/mkondratyev85/raster_trace
 - Allow installation alongside Raster Tracer, with separate preferences.
 - Name the fork Raster Scribe and give it a blue icon.
 - Place the plugin under the **Raster** menu.
-- Add a controls reference and require unmodified letter keys for tracing actions.
-- Optionally open the finished line's attribute form, with Shift+right-click
+- Add configurable controls with a preview of the selected bindings, saved
+  shortcuts, and warnings about possible conflicts with current QGIS shortcuts.
+- Allow clearing shortcuts, restoring defaults, and choosing or disabling the
+  modifier that reverses the finish-form setting. Reject duplicate tracing keys.
+- Optionally open the finished line's attribute form, with Shift+right-click by default
   reversing the saved choice once.
 - Add fields to a layer from the feature form while preserving unfinished input.
 - Create a temporary editable line layer using the selected raster's CRS.

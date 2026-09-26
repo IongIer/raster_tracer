@@ -80,6 +80,7 @@ plugin's translations.
 Use a clean profile for QGIS 3 and QGIS 4. Install the ZIP and copy the
 [example project](../documentation/example/) to a writable location.
 Check the desktop workflow and appearance as well as the automated results.
+Use default bindings for the tracing checks unless a row calls for customization.
 
 | Action | Expected result |
 | --- | --- |
@@ -87,9 +88,16 @@ Check the desktop workflow and appearance as well as the automated results.
 | Select an existing line layer and source raster, enable editing, and click **Start tracing** below **Create scratch layer** | The canvas enters tracing mode and accepts a starting point without another toolbar click or a color sample. |
 | Clear the source raster, select an unsupported layer, and stop or start editing | **Start tracing** is enabled only with a suitable raster and an active editable MultiLineString or MultiCurve layer; its tooltip explains missing prerequisites. |
 | Switch to pan or identify, then click **Start tracing** again; also click it during an active draft | Tracing resumes with the same settings; clicking while tracing keeps the draft intact. |
-| Use `A`, `D`, `T`, and `S`; repeat with Layers-panel focus during a trace | Modes, sampled color, and color snapping change as described in the usage guide. |
-| Open **Controls…** and compare the listed controls with the tool | Every keyboard and mouse action is described, including Shift+right-click and the focus requirement. |
-| Try modified letter keys on the canvas and in the Layers panel | They do not trigger the corresponding unmodified tracing action. |
+| Use `A`, `D`, `T`, and `N`; repeat with Layers-panel focus during a trace | Modes, sampled color, and color snapping change as described in the usage guide. |
+| Open **Controls…** and compare the listed controls with the tool | Every keyboard and mouse action is described, including the chosen finish-form modifier and the focus requirement. |
+| Assign a modified key in **Controls…**, inspect the preview, and click **Apply** | The preview describes the proposed key; after Apply, only the new combination runs that action on the canvas and in the Layers panel during a draft. |
+| Clear a shortcut and apply; then restore defaults and apply | Clearing disables that action's keyboard shortcut; restoring defaults brings it back. |
+| Assign the same combination to two tracing actions | Both entries show a red Error message and Apply is disabled until it is resolved. |
+| Edit a binding and close without applying; reopen Controls | The previous saved binding remains active and is shown again. |
+| Apply changed bindings and a finish modifier, reopen the dock, switch projects, and restart QGIS | The same QGIS user profile retains the chosen settings. |
+| In QGIS Keyboard Shortcuts, assign a tracing key or a longer sequence beginning with it; change that assignment while Controls remains open | The amber Warning message identifies the current owner and sequence, including first-key conflicts; it updates when the QGIS assignment changes. Apply remains available for valid tracing bindings. |
+| Apply a binding with a QGIS conflict warning | QGIS's existing assignment stays unchanged; check which action receives the key in the actual tracing context. Disabled or widget-specific actions may not interfere. |
+| Try extra modifiers on configured keys on the canvas and in the Layers panel | Only the exact configured keyboard combination triggers the tracing action. |
 | Press Escape during a long trace; start another | Earlier segments remain and the new trace can finish. |
 | Press `B` during pending work, then after an accepted segment | Pending work cancels; the last draft segment can be removed. |
 | Finish a multi-segment line, then use QGIS Undo/Redo | The whole finished line disappears and returns as one edit. |
@@ -101,7 +109,9 @@ Check the desktop workflow and appearance as well as the automated results.
 | Toggle **Open attributes after finishing**, reopen the dock, and restart QGIS | The chosen setting is restored. |
 | Finish a line with right-click and Shift+right-click, with the form option both on and off | The form opens according to the checkbox; Shift reverses it for one finish without changing the saved setting. |
 | Enter attribute values and accept the form; undo and redo | Values are applied to the new line. Attribute edits and line creation can be undone independently. |
-| Type letters used by tracing shortcuts into form fields | Text is entered normally and tracing modes do not change. |
+| Type letters used by default and customized tracing shortcuts into attribute forms and other input fields | Text is entered normally and tracing modes do not change. |
+| Change the finish modifier, test it with the form checkbox on and off, then disable the override | Holding the chosen modifier reverses the form choice once, including when another modifier is held; Disabled leaves the checkbox in control. The saved checkbox does not change. |
+| Test alternative finish modifiers using the desktop's mouse or trackpad | The intended gesture reaches the tracing tool; check for operating-system interception, which the keyboard conflict warnings cannot detect. |
 | Type values, add a field, and continue editing | Typed values survive the refresh; the new field is available in an autogenerated form. |
 | Add decimal and text fields; try duplicate names and a layer that cannot add fields | Valid fields are added to the whole layer; unsupported additions fail clearly or are disabled. |
 | Cancel a form with unaccepted values, including after adding a field | The finished line and confirmed field remain; the unaccepted values do not. Field creation is a separate undoable edit. |
@@ -120,5 +130,6 @@ Record the tested commit or working-tree changes, QGIS version, platform,
 and any failures. Keep dated test reports separate from this guide.
 
 macOS input behavior remains unverified until tested on a desktop. In a macOS
-run, include secondary-click and Shift+secondary-click using both a mouse and
-the available trackpad gesture.
+run, include secondary-click and the default and customized finish modifiers
+using both a mouse and the available trackpad gesture. Verify native modifier
+labels and customized keyboard combinations too.

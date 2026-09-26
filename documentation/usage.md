@@ -1,5 +1,8 @@
 # Using Raster Scribe
 
+Keys and mouse gestures in this guide are the defaults. Open **Controls…** in
+the plugin panel to see or change your bindings.
+
 ## Trace your first line
 
 This example uses a small black line on a white raster and an empty vector
@@ -67,12 +70,15 @@ layer to save it to a file before closing the project.
 Enable **Open attributes after finishing** to open the new line's attribute
 form after right-clicking to finish. Enter values and accept the form to
 apply them. The checkbox is off by default and is saved between sessions.
-Shift+right-click reverses the saved choice for that finish only:
+By default, Shift+right-click reverses the saved choice for that finish only:
 
 | Open attributes after finishing | Right-click | Shift+right-click |
 | --- | --- | --- |
 | Off | Finish the line. | Finish and open its form. |
 | On | Finish and open its form. | Finish the line. |
+
+You can change or disable this modifier in **Controls…**. Holding the chosen
+modifier, even with other modifiers held, reverses the choice for one finish.
 
 Cancelling the form keeps the finished line and discards unaccepted attribute
 values. Line creation and accepted attribute edits are separate undoable
@@ -163,11 +169,13 @@ checking for unsaved edits.
 | Smooth lines | Smooth the traced path. The preview uses the same smoothing. |
 | Preview path | Show the proposed path while moving the pointer. The adjacent button sets its color. |
 | Preview width | Set the width of the preview line. |
-| Open attributes after finishing | Open the new feature's form after finishing with right-click. Shift+right-click reverses the choice once. |
-| Controls… | Show the plugin's keyboard and mouse controls. |
+| Open attributes after finishing | Open the new feature's form after finishing with right-click. The configured modifier reverses the choice once. |
+| Controls… | View and customize keyboard controls and the finish-form modifier; review possible QGIS shortcut conflicts. |
 
 Color, snapping, smoothing, preview, and **Open attributes after finishing**
 preferences are saved between sessions.
+
+Default keyboard and mouse controls:
 
 | Key or mouse button | Action |
 | --- | --- |
@@ -177,16 +185,40 @@ preferences are saved between sessions.
 | `A` | Toggle straight-line mode. |
 | `D` | Toggle straight-line mode with extra vertices. |
 | `T` | Sample a color under the pointer and return to tracing. |
-| `S` | Toggle color snapping. |
+| `N` | Toggle color snapping. |
 | `B` | Cancel pending work, undo the last tracing step, or remove the starting point. |
 | Escape | Cancel the pending segment. |
 
 Use shortcuts while the tracing tool is active. They also work with focus in
-the Layers panel during a trace. Letter shortcuts use the unmodified key and
-do not run while typing in the attribute form or other input fields. Bindings
-are fixed in this version. A matching shortcut assigned in QGIS may take
-precedence; check **Settings → Keyboard Shortcuts** if a plugin key does not
-respond.
+the Layers panel during a trace. They do not run while typing in the attribute
+form or other input fields. Modifiers must match the configured keyboard
+combination exactly.
+
+### Try configurable controls
+
+Open **Controls…** and select a keyboard entry to record a single key combination,
+with optional modifiers. Use its clear button to disable that tracing shortcut.
+The **Controls preview** shows the proposed bindings; **Apply** makes them active
+and saves them for your QGIS user profile, across projects and restarts. Closing
+the panel discards unapplied changes. **Restore Defaults** also needs **Apply**.
+Two tracing actions cannot share a key combination. Red **Error:** messages mark
+duplicate or invalid bindings, and **Apply** stays disabled until they are resolved.
+
+Amber **Warning:** messages show possible conflicts with current QGIS and other plugin shortcuts,
+including customized assignments and the first key of a multi-key shortcut.
+They refresh while the panel is open. A warning does not block **Apply**, but
+QGIS may receive the key before Raster Scribe. Disabled actions and shortcuts
+limited to another widget are included as potential conflicts and may not
+interfere in the current context. Raster Scribe does not change QGIS's shortcut
+assignments; you can inspect those in **Settings → Keyboard Shortcuts**.
+
+Under **Finishing a line**, choose Shift, Ctrl, Alt, Meta, or **Disabled** for
+reversing the form setting once. The panel uses your platform's key labels.
+QGIS keyboard shortcuts do not reserve a modifier by itself; the right-click
+gesture is separate from those shortcuts. Operating-system shortcuts, mouse
+gestures, and custom key handlers cannot be checked here; some keyboard-layout
+aliases may also go undetected. Test an alternative modifier on your desktop
+before relying on it; macOS remains unverified.
 
 ## Supported inputs
 
@@ -213,6 +245,7 @@ Pixels marked as nodata or invalid cannot be traced or sampled for color.
 | `B` does not undo an earlier trace | `B` only edits the current draft. Use QGIS's Undo command for finished lines. |
 | The attribute form does not open | Enable Open attributes after finishing, or use Shift+right-click with it disabled. A line must be created successfully. Automatic finishes during saving or tool changes do not open forms. |
 | A new field is missing from the form | Check whether the layer uses a custom form layout and add the field to that layout in the layer's form configuration. |
+| A tracing shortcut does not respond | Check its current binding and possible conflicts in Controls…. Confirm the tracing tool and canvas focus, or Layers-panel focus during a draft. |
 | A scratch layer is missing after reopening the project | Scratch layers are temporary. Use Make Permanent before closing the project to keep their data. |
 
 For a failure that persists, check the **Raster Scribe** tab in QGIS's Log

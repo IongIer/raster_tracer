@@ -15,7 +15,8 @@ developed by Mikhail Kondratyev. The fork is maintained by
 - Trace large rasters without loading the whole image into memory.
 - Saved color, snapping, smoothing, preview, and finish-form preferences.
 - Shortcuts for sampling a color and drawing a straight line with extra vertices.
-- A controls reference and an optional attribute form after finishing each line.
+- Configurable controls with QGIS shortcut conflict warnings, and an optional
+  attribute form after finishing each line.
 - Add fields from the attribute form, and create a scratch line layer for a raster.
 - Cancel pending traces or undo the last segment while keeping earlier work.
 - Support for QGIS 3.40+ and QGIS 4, using the same package.
@@ -51,9 +52,14 @@ Click a starting point, move along the line to see the preview, and click to
 add a segment. Right-click to finish, then click **Save Layer Edits** in QGIS.
 
 Enable **Open attributes after finishing** to enter values after each line;
-Shift+right-click reverses that choice for one line. Use **Add field to layer…**
+Shift+right-click reverses that choice for one line by default. Use **Add field to layer…**
 in the form if a field is missing. Scratch layers are temporary: use QGIS's
 **Make Permanent** action to keep their data after closing the project.
+
+Open **Controls…** to try shortcut customization, review possible QGIS conflicts,
+or change the modifier used with right-click. Choose **Apply** to save changes
+for your QGIS user profile; **Restore Defaults**, then **Apply**, restores the
+original controls.
 
 [Trace your first line](documentation/usage.md#trace-your-first-line) using the
 small example included in this repository. The guide also covers

@@ -43,7 +43,7 @@ from qgis.PyQt.QtCore import (
     QTranslator,
 )
 from qgis.PyQt.QtGui import QColor, QIcon
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QApplication
 
 # Initialize Qt resources from file resources.py
 from . import resources  # noqa: F401 - Registers the plugin's Qt resources.
@@ -53,26 +53,39 @@ from .pointtool_tasks import TraceTaskController
 
 # Import the code for the DockWidget
 from .raster_scribe_dockwidget import RasterScribeDockWidget
+from .shortcuts import ShortcutSettings, modifier_label
 
 
-class LayerTreeShortcutFilter(QObject):
-    def __init__(self, pointtool=None):
+class TracingShortcutFilter(QObject):
+    def __init__(self, pointtool=None, require_trace=False):
         super().__init__()
         self.pointtool = pointtool
+        self.require_trace = require_trace
 
     def set_pointtool(self, pointtool):
         self.pointtool = pointtool
 
     def eventFilter(self, obj, event):
+        if event.type() != QEvent.Type.KeyPress:
+            return super().eventFilter(obj, event)
         pointtool = self.pointtool
+        focus = QApplication.focusWidget()
+        # Ignored keys in an inline layer-name editor or canvas input can bubble
+        # to its parent. They still belong to that input, not to the trace.
+        editing_child = (
+            focus is not None
+            and focus not in (obj, obj.viewport())
+            and obj.isAncestorOf(focus)
+        )
         if (
             pointtool is not None
-            and event.type() == QEvent.Type.KeyPress
-            and event.modifiers() == Qt.KeyboardModifier.NoModifier
-            and pointtool.has_active_trace()
-            and event.key() in pointtool.handled_shortcut_keys()
+            and not pointtool.disposed
+            and not pointtool.suspended
+            and (not self.require_trace or pointtool.has_active_trace())
+            and pointtool.shortcuts.action(event, include_repeats=True) is not None
         ):
-            pointtool.keyPressEvent(event)
+            if not editing_child:
+                pointtool.keyPressEvent(event)
             event.accept()
             return True
         return super().eventFilter(obj, event)
@@ -113,6 +126,7 @@ class RasterScribe:
         self.pluginIsActive = False
         self.dockwidget = None
         self.layer_tree_filter = None
+        self.canvas_shortcut_filter = None
         self.task_controller = TraceTaskController()
         self.tool_identify = None
         self._connections = []
@@ -182,6 +196,11 @@ class RasterScribe:
             self.iface.layerTreeView().removeEventFilter(self.layer_tree_filter)
             self.layer_tree_filter.deleteLater()
             self.layer_tree_filter = None
+        if self.canvas_shortcut_filter is not None:
+            self.canvas_shortcut_filter.set_pointtool(None)
+            self.map_canvas.removeEventFilter(self.canvas_shortcut_filter)
+            self.canvas_shortcut_filter.deleteLater()
+            self.canvas_shortcut_filter = None
         tool = self.tool_identify
         if self.map_canvas.mapTool() is tool:
             if self.last_maptool is not None:
@@ -227,7 +246,10 @@ class RasterScribe:
         self.map_canvas.setMapTool(self.tool_identify)
 
     def _create_interface(self):
-        self.dockwidget = RasterScribeDockWidget()
+        self.shortcuts = ShortcutSettings()
+        self.dockwidget = RasterScribeDockWidget(
+            shortcuts=self.shortcuts, main_window=self.iface.mainWindow()
+        )
         self.iface.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dockwidget)
         self.dockwidget.show()
         self.map_canvas = self.iface.mapCanvas()
@@ -239,6 +261,7 @@ class RasterScribe:
             ensure_trace_color_enabled=self.ensure_trace_color_enabled,
             set_trace_color=self.set_trace_color_from_tool,
             scheduler=self.task_controller,
+            shortcuts=self.shortcuts,
         )
         self.dockwidget.can_close = self.tool_identify.finish_session
 
@@ -342,6 +365,7 @@ class RasterScribe:
             (dock.checkBoxOpenAttributes.toggled, self.open_attributes_changed),
             (dock.createScratchLayerButton.clicked, self.create_scratch_layer),
             (dock.startTracingButton.clicked, self.start_tracing),
+            (self.shortcuts.changed, self.shortcuts_changed),
             (self.tool_identify.attributes_requested, self.open_finished_attributes),
             (self.tool_identify.activated, self.update_start_button),
             (self.iface.layerTreeView().currentLayerChanged, self.start_target_changed),
@@ -349,9 +373,22 @@ class RasterScribe:
         for signal, callback in connections:
             signal.connect(callback)
             self._connections.append((signal, callback))
-        self.layer_tree_filter = LayerTreeShortcutFilter(self.tool_identify)
+        self.layer_tree_filter = TracingShortcutFilter(
+            self.tool_identify, require_trace=True
+        )
         self.iface.layerTreeView().installEventFilter(self.layer_tree_filter)
+        self.canvas_shortcut_filter = TracingShortcutFilter(self.tool_identify)
+        self.map_canvas.installEventFilter(self.canvas_shortcut_filter)
         self.start_target_changed()
+        self.shortcuts_changed()
+
+    def shortcuts_changed(self):
+        tooltip = self.tr("Open the finished line's form after right-clicking.")
+        if self.shortcuts.finish_modifier != "None":
+            tooltip += " " + self.tr(
+                "{}+right-click reverses this setting for one line."
+            ).format(modifier_label(self.shortcuts.finish_modifier))
+        self.dockwidget.checkBoxOpenAttributes.setToolTip(tooltip)
 
     def run(self):
         if self._unloaded:

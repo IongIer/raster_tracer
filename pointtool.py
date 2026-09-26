@@ -27,7 +27,6 @@ from qgis.gui import QgsMapToolEdit, QgsRubberBand, QgsVertexMarker
 from qgis.PyQt.QtCore import QCoreApplication, QPoint, Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor
 
-from .controls import SHORTCUT_ACTIONS, shortcut_action
 from .exceptions import OutsideMapError
 from .pointtool_preview import TracePreviewController
 from .pointtool_raster import RasterTracingContext
@@ -41,6 +40,7 @@ from .pointtool_session import (
     new_id,
 )
 from .pointtool_tasks import TraceTaskController
+from .shortcuts import ShortcutSettings
 from .utils import get_coords_from_raster_indxs, get_indxs_from_raster_coords
 
 DENSE_LINE_SPACING = 5.0  # Maximum vertex spacing in vector layer units.
@@ -105,6 +105,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         ensure_trace_color_enabled=None,
         set_trace_color=None,
         scheduler=None,
+        shortcuts=None,
     ):
         super().__init__(canvas)
         self.iface = iface
@@ -115,6 +116,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         self._own_edit = False
         self._finishing = False
         self.open_attributes_on_finish = False
+        self.shortcuts = shortcuts if shortcuts is not None else ShortcutSettings(self)
         self._connections = []
         self._raster_connections = []
         self._target_connections = []
@@ -833,7 +835,7 @@ class RasterScribePointTool(QgsMapToolEdit):
     def keyPressEvent(self, event):
         if self.disposed or self.suspended:
             return
-        action = shortcut_action(event)
+        action = self.shortcuts.action(event)
         if action is None:
             return
         if action == "undo_segment":
@@ -873,9 +875,6 @@ class RasterScribePointTool(QgsMapToolEdit):
         except Exception as error:
             self.report_failure("invalid_input", str(error))
 
-    def handled_shortcut_keys(self):
-        return SHORTCUT_ACTIONS.keys()
-
     def has_active_trace(self):
         return not self.disposed and not self.suspended and bool(self.session.anchors)
 
@@ -883,7 +882,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         if self.disposed or self.suspended:
             return
         if event.button() == Qt.MouseButton.RightButton:
-            invert = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            invert = self.shortcuts.finish_inverted(event.modifiers())
             self.finish_session(
                 open_attributes=self.open_attributes_on_finish != invert
             )

@@ -164,6 +164,37 @@ class FinishWorkflowTest(TraceFixture):
         self.tool = self.plugin.tool_identify
         self.assertFalse(self.tool.open_attributes_on_finish)
 
+    def test_custom_finish_modifier_opens_form_once_and_disabled_never_inverts(self):
+        for modifier, clicks in (
+            (
+                "Alt",
+                (
+                    (Qt.KeyboardModifier.AltModifier, True),
+                    (Qt.KeyboardModifier.ShiftModifier, False),
+                ),
+            ),
+            (
+                "None",
+                (
+                    (Qt.KeyboardModifier.ShiftModifier, False),
+                    (Qt.KeyboardModifier.AltModifier, False),
+                ),
+            ),
+        ):
+            self.plugin.shortcuts.apply(self.plugin.shortcuts.bindings, modifier)
+            for pressed, expected in clicks:
+                with self.subTest(modifier=modifier, pressed=pressed):
+                    self.trace_line()
+                    with patch.object(
+                        plugin_module, "show_finished_feature_form"
+                    ) as show:
+                        self.finish_click(pressed)
+                    self.assertEqual(show.call_count, int(expected))
+                    self.assertFalse(self.tool.open_attributes_on_finish)
+        self.assertNotIn(
+            "+right-click", self.plugin.dockwidget.checkBoxOpenAttributes.toolTip()
+        )
+
     def test_finish_opens_real_form_and_accepts_first_attribute(self):
         self.plugin.dockwidget.checkBoxOpenAttributes.setChecked(True)
         self.trace_line()

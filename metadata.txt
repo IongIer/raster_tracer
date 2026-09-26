@@ -10,7 +10,8 @@ email=mosionroatarevine@gmail.com
 about=Raster Scribe is an independently maintained fork of Raster Tracer by Mikhail Kondratyev.
     Click along a line in an RGB raster to draw vector geometry. The fork adds live path previews,
     windowed raster sampling, saved preferences, color sampling and dense straight-line shortcuts,
-    an optional form for finished lines with field creation, a controls reference,
+    an optional form for finished lines with field creation, configurable controls
+    with QGIS shortcut conflict warnings and a saved finish-form modifier,
     scratch-layer creation, and support for QGIS 3.40+ and QGIS 4.
     It also revises cancellation, undo, snapping, and handling of invalid raster pixels.
     A GDAL-readable RGB raster and an editable MultiLineString or MultiCurve layer are required;
@@ -26,7 +27,7 @@ tags=digitizing, raster, tracing
 icon=icon.png
 
 changelog=Unreleased -- Introduce Raster Scribe with a blue icon and a Raster menu entry. It can be installed alongside Raster Tracer, with separate preferences.
-    Fork changes -- Add previews, windowed raster sampling, saved preferences, a controls reference, optional feature forms with field creation, scratch-layer creation, extra shortcuts, QGIS 4 support, and tracing fixes. See CHANGELOG.md in the repository.
+    Fork changes -- Add previews, windowed raster sampling, saved preferences, configurable controls with shortcut conflict warnings, optional feature forms with field creation, scratch-layer creation, extra shortcuts, QGIS 4 support, and tracing fixes. See CHANGELOG.md in the repository.
     Upstream 0.3.3 -- Fix QGIS 3.30 compatibility.
 
 experimental=False
