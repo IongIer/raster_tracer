@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 — 2026-09-26
 
-Changes from [Raster Tracer 0.3.3](https://github.com/mkondratyev85/raster_tracer):
+First Raster Scribe release, with its own version sequence. Based on
+[Raster Tracer 0.3.3](https://github.com/mkondratyev85/raster_tracer), with the
+following changes:
 
 ### Tracing
 

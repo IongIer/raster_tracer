@@ -1,271 +1,101 @@
 # Using Raster Scribe
 
-Keys and mouse gestures in this guide are the defaults. Open **Controls…** in
-the plugin panel to see or change your bindings.
+For installation and tracing your own map, start with the [README](../README.md).
+Keys below are defaults; **Controls…** shows your current bindings.
 
-## Trace your first line
+## Choose an output layer
 
-This example uses a small black line on a white raster and an empty vector
-layer. Install Raster Scribe using the [README instructions](../README.md#install).
+Select your RGB raster under **Layer to trace**, then use **Create scratch
+layer** for a temporary line layer. To use an existing layer, select it and
+enable editing before clicking **Start tracing**. It must be **MultiLineString**
+or **MultiCurve**; ordinary LineString layers are not accepted. A numeric
+elevation field is an attribute, not 3D geometry.
 
-1. Copy the [example folder](example/) from this repository to a writable
-   location, then open `example.qgs` in QGIS.
-2. Select **Traced lines** in the Layers panel and click **Toggle Editing**
-   (the pencil button).
-3. Open **Raster → Raster Scribe → Raster Scribe**, or click the blue icon on
-   the Raster Scribe toolbar.
-4. Set **Layer to trace** to **Example raster**. Leave **Trace color** and both
-   snapping options off. Leave **Preview path** on, then click **Start tracing**.
-5. Click near the left end of the black line. Move the pointer along the line
-   to its first bend. A pink preview shows the proposed path.
-6. Click to add that segment. Continue along the line with a few more clicks.
-7. Right-click to finish the line, then click **Save Layer Edits** in QGIS.
+## Convert a raster to RGB
 
-If a preview takes a wrong turn, move the pointer closer to the last point.
-Use `B` to undo the last tracing step. You can repeat the example after
-deleting the line from **Traced lines**.
+Scribe reads RGB values from bands 1–3, not QGIS's display styling. Single-band
+and indexed rasters must be converted first. Rotated, skewed and flipped raster
+mappings are unsupported; the raster, project and vector layer may use different
+coordinate systems. Scratch-layer creation requires a defined raster CRS.
 
-While tracing, the accepted segments form a visible draft using QGIS's
-digitizing appearance. Right-click adds the complete line to the vector layer
-and its attribute table. QGIS Undo/Redo then removes or restores the whole line.
+For an indexed image with a palette, use **Processing Toolbox → GDAL → Raster
+conversion → PCT to RGB** and save a GeoTIFF. This tool requires a color table.
+See [PCT to RGB](https://docs.qgis.org/3.40/en/docs/user_manual/processing_algs/gdal/rasterconversion.html#pct-to-rgb).
 
-## Common tasks
+For 8-bit grayscale values 0–255 without a palette, use a terminal with GDAL:
 
-### Trace your own map
+```sh
+gdal_translate -of GTiff -b 1 -b 1 -b 1 -colorinterp red,green,blue "input.tif" "rgb.tif"
+```
 
-Load an RGB raster and a MultiLineString or MultiCurve vector layer. Select the
-vector layer in the Layers panel and click **Toggle Editing** (the pencil).
-Activate Raster Scribe, then choose the raster under **Layer to trace**.
-Click **Start tracing** in the plugin panel to activate the tracing tool.
-Alternatively, choose the raster and click **Create scratch layer** to create
-a temporary vector layer ready for tracing. Trace and save edits as in the
-example above.
+Other ranges, including black-and-white values 0–1, also need scaling; see
+[`gdal_translate`](https://gdal.org/en/stable/programs/gdal_translate.html).
+Load the converted file and select it under **Layer to trace**.
 
-**Start tracing** is enabled when a suitable raster is selected and the active
-vector layer is an editable MultiLineString or MultiCurve layer. Use it again
-after switching to another QGIS tool, such as pan or identify.
+## Choose the color and tracing method
 
-The raster, project, and vector layer may use different coordinate systems.
-The plugin reads the raster's first three bands as red, green, and blue;
-changes to QGIS display styling do not change those source values.
+Enable **Trace color** to follow a chosen color, or press `T` over the intended
+line to sample it. With the setting off, each segment uses its endpoint pixel's
+color, so avoid placing endpoints on text or a neighboring contour.
 
-### Create a temporary line layer
+**Enhanced tracing (slower)** (`E`) prefers continuity through interruptions.
+It uses more processing and can still follow the wrong stroke or round a sharp
+bend. Check the preview and use closer clicks or straight segments when needed.
+**Smooth lines** smooths the output separately from the tracing method.
 
-Choose the source raster under **Layer to trace**, then click **Create scratch
-layer**. The plugin adds a 2D MultiLineString layer using the raster's CRS,
-selects it, and enables editing. The button is disabled without a suitable
-raster. A raster with an undefined CRS needs a CRS assigned before creating
-the layer.
+Switching methods cancels pending previews and clicks while preserving accepted
+segments. Click again to accept the new preview. Enhanced tracing starts off by
+default; your choice is saved. Straight-line modes stay selected when toggling it.
 
-The new layer has no attribute fields. You can add the fields you need from
-the attribute form described below, or through QGIS's layer tools. A numeric
-field such as `z` is an ordinary attribute; it does not make the geometry 3D.
+## Shortcuts and snapping
 
-Scratch layers are temporary. **Save Layer Edits** and saving the project do
-not make their data permanent. Use QGIS's **Make Permanent** action for the
-layer to save it to a file before closing the project.
-
-### Enter attributes after each line
-
-Enable **Open attributes after finishing** to open the new line's attribute
-form after right-clicking to finish. Enter values and accept the form to
-apply them. The checkbox is off by default and is saved between sessions.
-By default, Shift+right-click reverses the saved choice for that finish only:
-
-| Open attributes after finishing | Right-click | Shift+right-click |
-| --- | --- | --- |
-| Off | Finish the line. | Finish and open its form. |
-| On | Finish and open its form. | Finish the line. |
-
-You can change or disable this modifier in **Controls…**. Holding the chosen
-modifier, even with other modifiers held, reverses the choice for one finish.
-
-Cancelling the form keeps the finished line and discards unaccepted attribute
-values. Line creation and accepted attribute edits are separate undoable
-edits. The form does not save all layer edits; use QGIS's normal save action
-when ready.
-
-Only an explicit finish gesture can open this form. Finishing a draft while
-saving, changing layers or tools, or closing the plugin does not open it.
-An empty draft or an unsuccessful finish does not open a form either.
-
-#### Add a missing field
-
-Click **Add field to layer…** in the form to define a field name and supported
-type, with length or precision where applicable. For example, add a decimal
-field named `z` for an elevation entered manually, or a text field for notes.
-The plugin does not require any particular field name.
-
-Adding a field changes the whole layer. Existing features normally have no
-value in it until you populate them. The form refreshes after the addition
-while keeping values you have already typed. Confirmed field creation is a
-separate undoable layer edit and remains even if you cancel the feature form.
-
-Field names and types must satisfy the layer's data provider. The button is
-disabled if the layer cannot add fields. A custom form layout may require
-placing the new field in the layout through QGIS's form configuration; the
-plugin does not rearrange a custom layout.
-
-Some providers enforce required values as soon as a feature is added. This
-form opens after line creation, so such layers may need suitable defaults
-before tracing.
-
-### Follow a particular color
-
-Enable **Trace color** and choose the color to follow. You can also place the
-pointer over a line and press `T`. This samples the pixel, enables **Trace
-color**, and switches to tracing mode.
-
-With **Trace color** off, each segment uses the color at its end point. This
-can help when the line's color varies across the map.
-
-### Join an existing line
-
-Enable **Snap to vector layer**. Set a distance and click near a vertex in the
-active vector layer or the current draft. The new segment ends at the nearest
-vertex within that distance. Snapping joins coordinates; it does not merge
-separate features.
-
-The distance uses the map canvas's coordinate system: usually metres or feet
-in a projected CRS, or degrees in a geographic CRS. It is not a screen-pixel
-distance.
-
-### Draw across a gap
-
-Press `A` to draw straight segments. Click across the gap, then press `A`
-again to resume tracing.
-
-Press `D` for straight segments with evenly spaced extra vertices, at most
-5 units apart in the vector layer's coordinate system. A segment shorter than
-5 units gets a midpoint. Press `D` again to return to tracing.
-
-### Trace through text and line crossings
-
-Enable **Enhanced tracing (slower)**, or press `E`, to use contour continuity
-when following interrupted lines. It uses more processing and can make the
-preview slower, especially on less powerful computers. The standard tracer is
-the default; the enhanced setting is saved between sessions.
-
-Switching clears the preview and cancels any segment still being calculated,
-including a pending click. Accepted segments and the last anchor stay in place.
-A new preview uses the selected method; click again to accept it. You can switch
-methods within one line. Straight and dense straight-line modes still draw
-direct segments, and **Smooth lines** remains a separate output setting.
-
-Enhanced tracing can still follow the wrong stroke or round a sharp bend.
-Check the preview and use closer clicks or straight-line mode where needed.
-
-### Cancel or finish a line
-
-Press Escape to cancel the segment being calculated. Earlier segments remain.
-Press `B` to cancel a pending segment, or remove the last accepted segment from
-the current draft. Right-click to finish the line. After finishing, use QGIS's
-Undo command (`Ctrl-Z`) to remove the entire line; Redo restores it. During
-tracing, `B` affects the draft and QGIS Undo affects edits already in the layer.
-
-Switching layers or tools, changing the project CRS, closing the dock, or saving
-layer edits finishes the accepted draft. Discarding layer edits also discards
-the draft. Finish with a right-click before saving if QGIS's save action is not
-yet enabled. Changing trace settings or making other layer edits cancels a
-pending calculation while keeping the draft.
-
-With buffered transaction groups enabled, QGIS may finish the draft when
-checking for unsaved edits.
-
-## Controls and shortcuts
-
-| Control | Purpose |
+| Key or gesture | Action |
 | --- | --- |
-| Layer to trace | Choose the source raster. |
-| Create scratch layer | Create and select a temporary editable line layer with the raster's CRS. |
-| Start tracing | Activate the tracing tool for the selected raster and active editable line layer. |
-| Trace color | Follow the chosen color for every segment. |
-| Snap to nearest | Move the end point toward the chosen color within the given radius, in raster pixels. Requires Trace color. Maximum radius: 99 pixels. |
-| Snap to vector layer | Snap to a vertex in the active vector layer or current draft, within the given distance in canvas CRS units. Takes precedence over color snapping. |
-| Smooth lines | Smooth the traced path. The preview uses the same smoothing. |
-| Enhanced tracing (slower) | Use more processing to follow contours through text and line crossings. `E` toggles the method. |
-| Preview path | Show the proposed path while moving the pointer. The adjacent button sets its color. |
-| Preview width | Set the width of the preview line. |
-| Open attributes after finishing | Open the new feature's form after finishing with right-click. The configured modifier reverses the choice once. |
-| Controls… | View and customize keyboard controls and the finish-form modifier; review possible QGIS shortcut conflicts. |
-
-Color, snapping, smoothing, enhanced tracing, preview, and **Open attributes after finishing**
-preferences are saved between sessions.
-
-Default keyboard and mouse controls:
-
-| Key or mouse button | Action |
-| --- | --- |
-| Left-click | Start a line or add a segment. |
-| Right-click | Finish the line; open its form if Open attributes after finishing is enabled. |
-| Shift+right-click | Finish the line and reverse the form-opening choice for this line only. |
+| Left-click / right-click | Add a segment / finish the line. |
 | `A` | Toggle straight-line mode. |
 | `D` | Toggle straight-line mode with extra vertices. |
 | `E` | Toggle enhanced tracing. |
-| `T` | Sample a color under the pointer and return to tracing. |
+| `T` | Sample a color, enable Trace color, and return to tracing. |
 | `N` | Toggle color snapping. |
-| `B` | Cancel pending work, undo the last tracing step, or remove the starting point. |
+| `B` | Cancel pending work or undo the last step in the current draft. |
 | Escape | Cancel the pending segment. |
+| Shift+right-click | Finish and reverse the attribute-form choice for this line. |
 
-Use shortcuts while the tracing tool is active. They also work with focus in
-the Layers panel during a trace. They do not run while typing in the attribute
-form or other input fields. Modifiers must match the configured keyboard
-combination exactly.
+**Snap to nearest** uses raster pixels (up to 99) and requires **Trace color**.
+**Snap to vector layer** uses canvas CRS units and takes precedence; it targets
+vertices in the active layer or draft, without merging features. Dense mode
+(`D`) adds vertices at most 5 vector-layer CRS units apart.
 
-### Try configurable controls
+Preferences persist between sessions. In **Controls…**, click **Apply** to save
+bindings or restored defaults. Duplicate keys are rejected; warnings flag
+possible QGIS conflicts. Shortcuts work with tracing active and canvas focus,
+or Layers-panel focus during a draft. They do not run while typing in forms.
 
-Open **Controls…** and select a keyboard entry to record a single key combination,
-with optional modifiers. Use its clear button to disable that tracing shortcut.
-The **Controls preview** shows the proposed bindings; **Apply** makes them active
-and saves them for your QGIS user profile, across projects and restarts. Closing
-the panel discards unapplied changes. **Restore Defaults** also needs **Apply**.
-Two tracing actions cannot share a key combination. Red **Error:** messages mark
-duplicate or invalid bindings, and **Apply** stays disabled until they are resolved.
+## Attributes and unfinished lines
 
-Amber **Warning:** messages show possible conflicts with current QGIS and other plugin shortcuts,
-including customized assignments and the first key of a multi-key shortcut.
-They refresh while the panel is open. A warning does not block **Apply**, but
-QGIS may receive the key before Raster Scribe. Disabled actions and shortcuts
-limited to another widget are included as potential conflicts and may not
-interfere in the current context. Raster Scribe does not change QGIS's shortcut
-assignments; you can inspect those in **Settings → Keyboard Shortcuts**.
+Enable **Open attributes after finishing** to enter values after each line.
+Shift+right-click reverses the choice once; change or disable that modifier in
+**Controls…**. Cancelling the form keeps the line but discards unaccepted values.
 
-Under **Finishing a line**, choose Shift, Ctrl, Alt, Meta, or **Disabled** for
-reversing the form setting once. The panel uses your platform's key labels.
-QGIS keyboard shortcuts do not reserve a modifier by itself; the right-click
-gesture is separate from those shortcuts. Operating-system shortcuts, mouse
-gestures, and custom key handlers cannot be checked here; some keyboard-layout
-aliases may also go undetected. Test an alternative modifier on your desktop
-before relying on it; macOS remains unverified.
+Use **Add field to layer…** in the form for missing fields. New fields belong
+to the whole layer and remain if you cancel the form. Custom form layouts may
+need the field added through QGIS's form settings. Required fields may need
+default values, because the form opens after line creation.
 
-## Supported inputs
+Before finishing, `B` edits the draft; afterward, QGIS Undo/Redo affects the
+whole line. Changing layers, tools or project CRS, closing the dock, or saving
+edits finishes the accepted draft without opening a form. Discarding edits
+discards it. Scratch data remains temporary until **Make Permanent** is used.
 
-- A GDAL-readable raster with RGB values in bands 1–3. An RGB GeoTIFF is a
-  useful starting point. Single-band grayscale and palette images need
-  conversion to RGB before tracing.
-- A north-up raster. Rotated, skewed, or flipped raster mappings are not supported.
-- An editable MultiLineString or MultiCurve layer. Other geometry types,
-  including ordinary LineString layers, are not accepted.
-
-Pixels marked as nodata or invalid cannot be traced or sampled for color.
-
-## Troubleshooting
+## Common problems
 
 | Problem | What to try |
 | --- | --- |
-| Start tracing is disabled | Select a MultiLineString or MultiCurve vector layer, enable editing, and choose a valid RGB raster in the dock. |
-| Clicking does not start a line | Check the source raster and editable vector layer, then click Start tracing in the dock. |
-| The path follows the wrong line | Click closer together or sample the intended color with `T`. |
-| A tracing limit is reached | Choose a shorter segment. Earlier segments remain intact. |
-| No path is found | Check for gaps or invalid pixels. Use `A` to draw a straight segment across a gap. |
-| Snapping reaches too far | Check the units: color snapping uses raster pixels; vector snapping uses the canvas CRS. A distance of 1 degree can be very large. |
-| The raster is rejected | Check that GDAL can open it, that it has at least three bands, and that its mapping is north-up. |
-| `B` does not undo an earlier trace | `B` only edits the current draft. Use QGIS's Undo command for finished lines. |
-| The attribute form does not open | Enable Open attributes after finishing, or use Shift+right-click with it disabled. A line must be created successfully. Automatic finishes during saving or tool changes do not open forms. |
-| A new field is missing from the form | Check whether the layer uses a custom form layout and add the field to that layout in the layer's form configuration. |
-| A tracing shortcut does not respond | Check its current binding and possible conflicts in Controls…. Confirm the tracing tool and canvas focus, or Layers-panel focus during a draft. |
-| A scratch layer is missing after reopening the project | Scratch layers are temporary. Use Make Permanent before closing the project to keep their data. |
+| Start tracing is disabled | Check its tooltip for the missing raster, layer or editing requirement. |
+| Wrong route | Use closer clicks, sample with `T`, or try `E` through a crossing. |
+| No path or a tracing limit | Use a shorter segment. Nodata pixels cannot be traced; use `A` across gaps. |
+| A shortcut does not respond | Check Controls… for its binding and conflicts, then focus the canvas. |
+| Snapping reaches too far | Check its units, especially when the canvas CRS uses degrees. |
 
-For a failure that persists, check the **Raster Scribe** tab in QGIS's Log
-Messages panel. Include the message, QGIS version, and steps to reproduce it
-when [reporting a problem](https://github.com/IongIer/raster_tracer/issues).
+For a persistent problem, include **Log Messages → Raster Scribe** output and
+your QGIS version when [reporting it](https://github.com/IongIer/raster_scribe/issues).

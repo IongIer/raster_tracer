@@ -3,36 +3,32 @@ name=Raster Scribe
 qgisMinimumVersion=3.40
 qgisMaximumVersion=4.99
 description=Interactively trace lines in RGB raster maps with live previews, color sampling, and snapping.
-version=0.3.4
+version=0.1.0
 author=IongIer (fork maintainer); Mikhail Kondratyev (original author)
 email=mosionroatarevine@gmail.com
 
-about=Raster Scribe is an independently maintained fork of Raster Tracer by Mikhail Kondratyev.
-    Click along a line in an RGB raster to draw vector geometry. The fork adds live path previews,
-    windowed raster sampling, saved preferences, color sampling and dense straight-line shortcuts,
-    an optional form for finished lines with field creation, configurable controls
-    with QGIS shortcut conflict warnings and a saved finish-form modifier,
-    scratch-layer creation, and support for QGIS 3.40+ and QGIS 4.
-    It also revises cancellation, undo, snapping, and handling of invalid raster pixels.
-    Optional enhanced tracing follows contour continuity through interruptions, using more processing.
-    Toggle it with E by default; the choice is saved and the standard tracer remains the default.
-    A GDAL-readable RGB raster and an editable MultiLineString or MultiCurve layer are required;
-    the plugin can create a temporary line layer matching the raster's CRS.
-    Rotated or skewed raster mappings are unsupported.
-    License: GNU GPL version 3 or later. Original component notices are preserved in the package.
+about=Trace contours, roads, and other lines with live previews, color sampling, snapping, and configurable shortcuts.
+    Create a temporary line layer, or use an editable MultiLineString or MultiCurve layer.
+    Requires a GDAL-readable north-up raster with RGB values in bands 1-3. Single-band grayscale
+    or black-and-white and indexed/palette rasters need conversion to RGB. Rotated, skewed,
+    and flipped mappings are unsupported. Ordinary LineString layers are unsupported.
+    Optional Enhanced tracing (slower) uses a bundled Python HFM solver to follow interrupted contours.
+    Uses the Python libraries supplied with QGIS; no extra dependencies or compiled solver need installing.
+    Raster Scribe is an independently maintained fork of Raster Tracer by Mikhail Kondratyev.
+    License: GNU GPL version 3 or later; original component notices are preserved in NOTICE.txt.
+    https://github.com/IongIer/raster_scribe/blob/master/LICENSE
     Original project: https://github.com/mkondratyev85/raster_tracer
 
-homepage=https://github.com/IongIer/raster_tracer#readme
-repository=https://github.com/IongIer/raster_tracer
-tracker=https://github.com/IongIer/raster_tracer/issues
+homepage=https://github.com/IongIer/raster_scribe#readme
+repository=https://github.com/IongIer/raster_scribe
+tracker=https://github.com/IongIer/raster_scribe/issues
 category=Raster
 tags=digitizing, raster, tracing
 icon=icon.png
 
-changelog=Unreleased -- Introduce Raster Scribe with a blue icon and a Raster menu entry. It can be installed alongside Raster Tracer, with separate preferences.
+changelog=0.1.0 (2026-09-26) -- First Raster Scribe release, based on Raster Tracer 0.3.3. It can be installed alongside Raster Tracer, with separate preferences.
     Enhanced tracing -- Add an optional Python contour solver and configurable E shortcut; switching cancels pending work and refreshes the preview.
-    Fork changes -- Add previews, windowed raster sampling, saved preferences, configurable controls with shortcut conflict warnings, optional feature forms with field creation, scratch-layer creation, extra shortcuts, QGIS 4 support, and tracing fixes. See CHANGELOG.md in the repository.
-    Upstream 0.3.3 -- Fix QGIS 3.30 compatibility.
+    Other changes -- Add live previews, windowed raster sampling, saved preferences, configurable controls, feature forms, scratch layers, QGIS 4 support, and tracing fixes. See CHANGELOG.md in the repository.
 
 experimental=False
 deprecated=False

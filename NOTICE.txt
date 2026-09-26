@@ -100,5 +100,4 @@ These combined-work terms do not remove permissions granted by the original
 licenses for the respective upstream material. Retain the accompanying
 copyright and license notices when redistributing it.
 
-Example data and test fixtures in the source repository retain their separate
-notices, including documentation/example/README.md and test/tenbytenraster.lic.
+Test fixtures retain their separate notices, including test/tenbytenraster.lic.

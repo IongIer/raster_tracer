@@ -1,96 +1,54 @@
 # Raster Scribe
 
-Raster Scribe is a QGIS plugin for tracing lines in RGB raster maps. Click
-along a contour, road, or other line, and the plugin follows pixels of a
-similar color to draw vector geometry.
+Trace contours, roads and other lines from raster maps into QGIS vector layers.
+Click along a line, check the live preview, and right-click to finish.
 
-This is an independently maintained fork of
-[Raster Tracer](https://github.com/mkondratyev85/raster_tracer), originally
-developed by Mikhail Kondratyev. The fork is maintained by
-[IongIer](https://github.com/IongIer).
+- Sample the line's color, snap to existing vertices, or draw across gaps.
+- Toggle enhanced tracing for difficult text and line crossings.
+- Create a scratch layer, enter attributes, and customize your shortcuts.
+- Work on large rasters without loading the whole image into memory.
 
-## Differences from Raster Tracer
+Requires **QGIS 3.40–4.x** and a **north-up RGB raster**. Indexed/palette and
+single-band grayscale or black-and-white rasters need
+[conversion to RGB](documentation/usage.md#convert-a-raster-to-rgb) first.
+Uses libraries supplied with QGIS; no extra solver installation is needed.
+Tested on Linux and Windows; macOS remains untested.
 
-- Live path previews, with adjustable color and width.
-- Optional enhanced tracing for interrupted contours, toggled with `E`.
-- Trace large rasters without loading the whole image into memory.
-- Saved color, snapping, smoothing, preview, and finish-form preferences.
-- Shortcuts for sampling a color and drawing a straight line with extra vertices.
-- Configurable controls with QGIS shortcut conflict warnings, and an optional
-  attribute form after finishing each line.
-- Add fields from the attribute form, and create a scratch line layer for a raster.
-- Cancel pending traces or undo the last segment while keeping earlier work.
-- Support for QGIS 3.40+ and QGIS 4, using the same package.
-
-See [the changelog](CHANGELOG.md) for details.
-
-![Raster Scribe tracing the example in QGIS 4](documentation/raster-scribe.png)
-
-The blue line is drawn geometry; the pink line is the next segment's preview.
+![Raster Scribe tracing contours in QGIS](documentation/raster-scribe.gif)
 
 ## Install
 
-Build the plugin from the repository root with Python 3:
+1. Download [raster_scribe-0.1.0.zip](https://github.com/IongIer/raster_scribe/releases/download/scribe-v0.1.0/raster_scribe-0.1.0.zip).
+2. In QGIS, open **Plugins → Manage and Install Plugins → Install from ZIP**
+   and select it. Use this plugin ZIP, not GitHub's **Source code** archive.
 
-```sh
-python3 scripts/package-plugin.py
-```
+Scribe can be installed alongside Raster Tracer and keeps separate preferences.
 
-In QGIS, open **Plugins → Manage and Install Plugins → Install from ZIP** and
-select the ZIP created in `dist/`. Open Raster Scribe from the **Raster** menu
-or its blue toolbar icon.
+## Quick start
 
-Raster Scribe can be installed alongside Raster Tracer. Each plugin keeps
-its own preferences. Saved vector layers need no conversion.
+1. Load your RGB raster. Open **Raster → Raster Scribe → Raster Scribe**, or
+   click the blue toolbar icon.
+2. Select the raster under **Layer to trace**, then click **Create scratch
+   layer** and **Start tracing**.
+3. Click a starting point, move along the line to check the preview, and click
+   to accept segments. Right-click to finish.
+4. Save the layer's edits. For a scratch layer, use **Make Permanent** from its
+   layer menu to keep the data after closing QGIS.
 
-## Use
-
-Load an RGB raster, activate Raster Scribe, and choose it under **Layer to
-trace**. Click **Create scratch layer** to start with a temporary line layer,
-or select an existing MultiLineString or MultiCurve vector layer and click
-**Toggle Editing** (the pencil), then **Start tracing** in the plugin panel.
-Click a starting point, move along the line to see the preview, and click to
-add a segment. Right-click to finish, then click **Save Layer Edits** in QGIS.
-
-Enable **Open attributes after finishing** to enter values after each line;
-Shift+right-click reverses that choice for one line by default. Use **Add field to layer…**
-in the form if a field is missing. Scratch layers are temporary: use QGIS's
-**Make Permanent** action to keep their data after closing the project.
-
-Open **Controls…** to try shortcut customization, review possible QGIS conflicts,
-or change the modifier used with right-click. Choose **Apply** to save changes
-for your QGIS user profile; **Restore Defaults**, then **Apply**, restores the
-original controls.
-
-[Trace your first line](documentation/usage.md#trace-your-first-line) using the
-small example included in this repository. The guide also covers
-[tasks](documentation/usage.md#common-tasks),
-[controls](documentation/usage.md#controls-and-shortcuts), and
-[troubleshooting](documentation/usage.md#troubleshooting).
-
-Tested on Linux and Windows. macOS has not been tested.
+The [usage guide](documentation/usage.md) covers controls and common problems.
 
 ## Development and support
 
-- [Build and development](documentation/development.md)
-- [Testing guide](test/README.md)
-- [Report a problem](https://github.com/IongIer/raster_tracer/issues)
+See [development](documentation/development.md), [testing](test/README.md), and
+[the changelog](CHANGELOG.md). [Report issues](https://github.com/IongIer/raster_scribe/issues)
+with your QGIS version and steps to reproduce them.
 
-Maintenance follows the maintainer's own use of the plugin. Report bugs on
-this fork's issue tracker, with the QGIS version and steps to reproduce them.
+## Credits and license
 
-## License and credits
+Maintained by [IongIer](https://github.com/IongIer), based on
+[Raster Tracer](https://github.com/mkondratyev85/raster_tracer) by Mikhail
+Kondratyev. The icon is adapted from the original; enhanced tracing adapts
+Jean-Marie Mirebeau's HamiltonFastMarching solver.
 
-Raster Scribe as a combined plugin is licensed under **GNU GPL version 3 or
-later (GPL-3.0-or-later)**. See [LICENSE](LICENSE) for the full text and
-[NOTICE.txt](NOTICE.txt) for component attribution and licensing details.
-
-Raster Tracer's original MIT notice is preserved in NOTICE.txt, alongside
-HamiltonFastMarching's original notices and attribution. Inherited GPL version
-2 or later source headers are retained; the upstream grants remain attached
-to their respective material.
-
-Enhanced tracing adapts Jean-Marie Mirebeau's HamiltonFastMarching solver in
-Python under GPL version 3 or later and uses QGIS's NumPy.
-
-The blue icon is adapted from Raster Tracer's original icon.
+Licensed as a combined plugin under **GPL-3.0-or-later**. See [LICENSE](LICENSE)
+and [NOTICE.txt](NOTICE.txt) for the terms and original component notices.
