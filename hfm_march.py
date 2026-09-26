@@ -260,6 +260,7 @@ def solve(cost_yx, start_xy, goal_xy, valid_yx=None, cancel=None, timeout=10):
         },
         "metadata": {
             "solver": "Python port of official first-order Elastica2 HFM",
+            # pragma: allowlist nextline secret -- Upstream Git commit ID.
             "source_commit": "420533c742d46f1d17145fa31b8167529be7182d",
             "xi": 24,
             "eps": 0.1,

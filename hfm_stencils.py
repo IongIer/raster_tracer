@@ -24,6 +24,7 @@ Upstream source is GPL-3.0-or-later; attribution and full license are included
 in NOTICE.txt and LICENSE.
 """
 
+# pragma: allowlist nextline secret -- Upstream Git commit ID.
 SOURCE_COMMIT = "420533c742d46f1d17145fa31b8167529be7182d"
 HEADING_COUNT = 16
 XI = 24.0
