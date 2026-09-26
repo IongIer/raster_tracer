@@ -12,7 +12,7 @@ from osgeo import gdal
 from .. import pointtool_raster as raster
 from ..pointtool_session import RasterSourceSpec, WorkerRequest
 from ..pointtool_tasks import execute_request
-from .utilities import get_qgis_app
+from .utilities import get_qgis_app, write_raster
 
 
 class CompactCacheTest(unittest.TestCase):
@@ -27,19 +27,7 @@ class CompactCacheTest(unittest.TestCase):
     def source(self, name, bands, data_type=gdal.GDT_Byte, nodata=None, mask=None):
         height, width = bands[0].shape
         path = Path(self.directory.name) / f"{name}.tif"
-        dataset = gdal.GetDriverByName("GTiff").Create(
-            str(path), width, height, len(bands), data_type
-        )
-        dataset.SetGeoTransform((0, 1, 0, height, 0, -1))
-        for number, values in enumerate(bands, 1):
-            band = dataset.GetRasterBand(number)
-            band.WriteArray(values)
-            if nodata is not None:
-                band.SetNoDataValue(nodata)
-        if mask is not None:
-            dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
-            dataset.GetRasterBand(1).GetMaskBand().WriteArray(mask)
-        dataset = None
+        write_raster(path, bands, data_type, nodata=nodata, mask=mask)
         return RasterSourceSpec(str(path), height, width, 1)
 
     def read(self, source):

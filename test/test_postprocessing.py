@@ -12,7 +12,6 @@ from qgis.core import QgsPointXY
 from ..astar import FindPathCoreResult
 from ..line_simplification import smooth
 from ..pointtool_tasks import execute_request, postprocess_path
-from .test_tracing_hardening import ControlledTask
 from .tracing_fixture import TraceFixture
 
 
@@ -124,10 +123,7 @@ class WorkerPostprocessTest(TraceFixture):
 
     def test_curved_worker_preview_and_adopted_commit_use_the_same_points(self):
         self.tool.smooth_line = True
-        submitted = []
-        scheduler = self.plugin.task_controller
-        scheduler._factory = ControlledTask
-        scheduler._submit = submitted.append
+        submitted = self.control_tasks()
         self.accept(8, 2)
         endpoint = self.tool.resolve_endpoint(self.tool.to_coords(4, 8))
         screen = self.tool.toCanvasCoordinates(QgsPointXY(*endpoint.xy))

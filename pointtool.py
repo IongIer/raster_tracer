@@ -39,8 +39,7 @@ from .pointtool_session import (
     as_xy,
     new_id,
 )
-from .pointtool_states import WaitingFirstPointState, WaitingMiddlePointState
-from .pointtool_tasks import TraceTaskController, execute_request
+from .pointtool_tasks import TraceTaskController
 from .utils import get_coords_from_raster_indxs, get_indxs_from_raster_coords
 
 DENSE_LINE_SPACING = 5.0  # Maximum vertex spacing in vector layer units.
@@ -145,7 +144,6 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.markers = []
         self._pending_markers = {}
         self.preview_controller = TracePreviewController(self)
-        self._sync_state()
         project = QgsProject.instance()
         self._connect(
             canvas, "destinationCrsChanged", self._context_changed, self._connections
@@ -248,12 +246,6 @@ class RasterScribePointTool(QgsMapToolEdit):
         )
         return True
 
-    def _sync_state(self):
-        cls = (
-            WaitingMiddlePointState if self.session.anchors else WaitingFirstPointState
-        )
-        self.state = cls(self)
-
     def _remove_pending_markers(self):
         for marker in self._pending_markers.values():
             self.canvas().scene().removeItem(marker)
@@ -278,7 +270,6 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.marker_snap.hide()
         self._context = None
         self._disconnect(self._target_connections)
-        self._sync_state()
 
     def finish_session(self, *args):
         """Publish the completed draft in one short, independently undoable edit."""
@@ -340,7 +331,7 @@ class RasterScribePointTool(QgsMapToolEdit):
             return
         hover = self.last_mouse_event_pos
         self._cancel_inflight_segment(evict=False)
-        if hover is not None and self.anchors and not self.suspended:
+        if hover is not None and self.session.anchors and not self.suspended:
             self._hover(hover)
 
     def _context_changed(self, *args):
@@ -499,13 +490,17 @@ class RasterScribePointTool(QgsMapToolEdit):
             )
 
         i, j = indexes(x, y)
+        snapped = False
         if self.tracing_mode.is_tracing():
             if self.snap_tolerance is not None and self.trace_color_value is not None:
                 i, j = self.snap(i, j)
                 x, y = as_xy(self.to_coords(i, j))
+                snapped = True
         if self.snap2_tolerance is not None:
             x, y = self.snap_to_itself(x, y, self.snap2_tolerance)
-        i, j = indexes(x, y)
+            snapped = True
+        if snapped:
+            i, j = indexes(x, y)
         return ResolvedEndpoint(x, y, i, j)
 
     def snap(self, i, j):
@@ -620,9 +615,9 @@ class RasterScribePointTool(QgsMapToolEdit):
             self.preview_controller.clear()
 
     def make_request(self, endpoint, screen_pos=None):
-        if not self.anchors or self._context is None:
+        if not self.session.anchors or self._context is None:
             raise OutsideMapError("No initial anchor")
-        start = self.anchors[-1]
+        start = self.session.anchors[-1]
         bounds = (
             self.raster_context.compute_window_bounds([start.pixel, endpoint.pixel])
             if self.tracing_mode.is_tracing()
@@ -652,18 +647,17 @@ class RasterScribePointTool(QgsMapToolEdit):
         if layer is None or not layer.isEditable():
             self.report_failure("invalid_input")
             return
-        if self.anchors and self.session.target_id != layer.id():
+        if self.session.anchors and self.session.target_id != layer.id():
             return  # A failed publication must keep its original draft/context.
         try:
             endpoint = self.resolve_endpoint(point)
-            if not self.anchors:
+            if not self.session.anchors:
                 self._context = self._capture_context(layer)
                 self.session.bind(layer.id(), endpoint)
                 self._observe_target(layer)
                 self.markers.append(self._marker(endpoint))
-                self._sync_state()
                 return
-            if endpoint.xy == self.anchors[-1].xy:
+            if endpoint.xy == self.session.anchors[-1].xy:
                 return
             request = self.make_request(endpoint, screen_pos)
             if not self._valid_request(request):
@@ -823,7 +817,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         if self.tracking_is_active:
             self._cancel_inflight_segment()
             return
-        if not self.anchors:
+        if not self.session.anchors:
             return
         if not self.session.segment_vertices:
             self._discard_session()
@@ -833,7 +827,6 @@ class RasterScribePointTool(QgsMapToolEdit):
         geometry = truncate_path_points(self.session.geometry, count) if count else None
         self.session.undo(geometry)
         self.canvas().scene().removeItem(self.markers.pop())
-        self._sync_state()
         self._show_draft()
         self.update_rubber_band()
 
@@ -878,15 +871,15 @@ class RasterScribePointTool(QgsMapToolEdit):
         return SHORTCUT_KEYS
 
     def has_active_trace(self):
-        return not self.disposed and not self.suspended and bool(self.anchors)
+        return not self.disposed and not self.suspended and bool(self.session.anchors)
 
     def canvasReleaseEvent(self, event):
         if self.disposed or self.suspended:
             return
         if event.button() == Qt.MouseButton.RightButton:
-            self.state.click_rmb(event, self.get_current_vector_layer())
+            self.finish_session()
         elif event.button() == Qt.MouseButton.LeftButton:
-            self.state.click_lmb(event, self.get_current_vector_layer())
+            self.accept_click(self.toMapCoordinates(event.pos()), event.pos())
 
     def canvasMoveEvent(self, event):
         if not self.disposed and not self.suspended:
@@ -896,7 +889,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.last_mouse_event_pos = QPoint(screen_pos)
         if self.tracking_is_active:
             return
-        if not self.anchors:
+        if not self.session.anchors:
             self.marker_snap.hide()
             return
         try:
@@ -917,7 +910,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         if (
             self.disposed
             or self.suspended
-            or not self.anchors
+            or not self.session.anchors
             or self.last_mouse_event_pos is None
         ):
             self.rubber_band.hide()
@@ -940,33 +933,11 @@ class RasterScribePointTool(QgsMapToolEdit):
         )
         self.rubber_band.setToGeometry(
             QgsGeometry.fromPolylineXY(
-                [QgsPointXY(*self.anchors[-1].xy), QgsPointXY(*end)]
+                [QgsPointXY(*self.session.anchors[-1].xy), QgsPointXY(*end)]
             ),
             None,
         )
         self.rubber_band.show()
-
-    def trace_over_image(self, start, goal):
-        """Synchronous numerical probe; ordinary input always uses the scheduler."""
-        from .pointtool_session import WorkerRequest
-
-        sampler = self.raster_context.raster_sampler
-        bounds = self.raster_context.compute_window_bounds([start, goal])
-        work = WorkerRequest(
-            new_id(),
-            sampler.source,
-            bounds,
-            start,
-            goal,
-            self.trace_color_value,
-            self.smooth_line,
-        )
-        result = execute_request(work)
-        if result.status != "success":
-            return None, None
-        return [
-            (i + result.origin[0], j + result.origin[1]) for i, j in result.path
-        ], result.cost
 
     def tr(self, message):
         return QCoreApplication.translate("RasterScribePointTool", message)

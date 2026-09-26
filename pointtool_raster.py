@@ -209,6 +209,11 @@ class RasterSnapshot:
         )
 
 
+def cost_cache_key(fixed_color, color):
+    """Identify the color policy, target and arithmetic used by cached costs."""
+    return (fixed_color, color, "float64/int64/masked-v1")
+
+
 def prepare_snapshot(work, cached, cancel):
     started = time.perf_counter()
     validate_budget(work.bounds)
@@ -266,7 +271,7 @@ def prepare_snapshot(work, cached, cancel):
         if work.color is not None
         else tuple(float(b[goal]) for b in snapshot.bands)
     )
-    key = (work.color is not None, color, "float64/int64/masked-v1")
+    key = cost_cache_key(work.color is not None, color)
     cost_hit = snapshot.cost is not None and snapshot.cost_key == key
     started = time.perf_counter()
     if not cost_hit:

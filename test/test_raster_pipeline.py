@@ -38,7 +38,7 @@ from ..pointtool_session import RasterSourceSpec, WorkerRequest
 from ..pointtool_tasks import execute_request
 from ..utils import RasterSampler, get_indxs_from_raster_coords
 from .tracing_fixture import TraceFixture
-from .utilities import get_qgis_app
+from .utilities import get_qgis_app, write_raster
 
 
 class RasterPipelineTest(unittest.TestCase):
@@ -53,16 +53,7 @@ class RasterPipelineTest(unittest.TestCase):
 
     def source(self, values, nodata=None):
         height, width = values.shape
-        dataset = gdal.GetDriverByName("GTiff").Create(
-            str(self.path), width, height, 3, gdal.GDT_Float64
-        )
-        dataset.SetGeoTransform((0, 1, 0, height, 0, -1))
-        for index in (1, 2, 3):
-            band = dataset.GetRasterBand(index)
-            band.WriteArray(values)
-            if nodata is not None:
-                band.SetNoDataValue(nodata)
-        dataset = None
+        write_raster(self.path, (values,) * 3, gdal.GDT_Float64, nodata=nodata)
         return RasterSourceSpec(str(self.path), height, width, 1)
 
     def test_unreferenced_rgb_uses_provider_pixel_coordinates(self):
@@ -269,6 +260,26 @@ class EndpointTest(TraceFixture):
         self.assertAlmostEqual(y, expected.y(), places=6)
         self.canvas.setDestinationCrs(layer.crs())
         self.assertEqual(self.tool.snap_to_itself(10, 60, 0.0007), (10, 60.0006))
+
+    def test_endpoint_conversion_reuses_indices_unless_snapping(self):
+        self.tool.trace_color_changed(QColor("black"))
+        self.feature([(1008.7, 1991.3), (1008.7, 1990.3)])
+        for color_snap, vertex_snap in ((None, None), (3, None), (None, 2), (3, 2)):
+            with self.subTest(color_snap=color_snap, vertex_snap=vertex_snap):
+                self.tool.snap_tolerance = color_snap
+                self.tool.snap2_tolerance = vertex_snap
+                with patch.object(
+                    self.tool, "to_indexes", wraps=self.tool.to_indexes
+                ) as convert:
+                    endpoint = self.tool.resolve_endpoint((1008.1, 1992.9))
+                self.assertEqual(
+                    convert.call_count, 1 if color_snap is vertex_snap is None else 2
+                )
+                self.assertEqual(endpoint.pixel, self.tool.to_indexes(*endpoint.xy))
+                if color_snap is None and vertex_snap is None:
+                    self.assertEqual(endpoint.xy, (1008.1, 1992.9))
+                else:
+                    self.assertNotEqual(endpoint.xy, (1008.1, 1992.9))
 
     def test_color_neighborhood_edges_positive_radius_and_both_snaps(self):
         self.tool.trace_color_changed(QColor("black"))

@@ -15,11 +15,10 @@ from qgis.core import (
     QgsRectangle,
     QgsVectorLayer,
 )
-from qgis.PyQt.QtCore import QEvent, Qt
-from qgis.PyQt.QtGui import QColor, QKeyEvent
+from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QColor
 
 from ..pointtool import TracingModes
-from .test_tracing_hardening import ControlledTask
 from .tracing_fixture import TraceFixture
 
 
@@ -254,11 +253,6 @@ class SnappingOptimizationTest(TraceFixture):
             self.tool.snap_to_itself(10, 60, 0.01), self.reference_snap(10, 60, 0.01)
         )
 
-    def key(self, key):
-        self.tool.keyPressEvent(
-            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
-        )
-
     def test_dense_shortcut_bypasses_search_and_generated_vertices_snap_after_undo(
         self,
     ):
@@ -281,9 +275,7 @@ class SnappingOptimizationTest(TraceFixture):
 
     def test_t_resamples_color_reuses_rgb_and_rejects_old_color_result(self):
         scheduler = self.plugin.task_controller
-        submitted = []
-        scheduler._factory = ControlledTask
-        scheduler._submit = submitted.append
+        submitted = self.control_tasks()
         self.tool.trace_color_changed(QColor("black"))
         self.accept(8, 2)
         self.tool._hover(self.tool.toCanvasCoordinates(self.tool.to_coords(8, 13)))

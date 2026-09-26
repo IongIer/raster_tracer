@@ -2,7 +2,6 @@
 
 from math import floor
 
-import numpy as np
 from osgeo import gdal
 from qgis.core import QgsCoordinateTransform
 
@@ -73,24 +72,6 @@ class RasterSampler:
     def to_coords(self, i, j):
         return self.trfm_from_src.transform(
             *get_coords_from_raster_indxs(self.geo_ref, (i, j))
-        )
-
-    def read_window(self, i_min, i_max, j_min, j_max, dtype=np.float32):
-        # Synchronous helper for small GUI reads and integration probes only.
-        from .pointtool_raster import read_rgb
-
-        bounds = (
-            max(0, i_min),
-            min(self.height, i_max),
-            max(0, j_min),
-            min(self.width, j_max),
-        )
-        bands, _ = read_rgb(self.dataset, self.source, bounds, lambda: False)
-        shape = (bounds[1] - bounds[0], bounds[3] - bounds[2])
-        return (
-            tuple(band.astype(dtype) for band in bands),
-            (bounds[0], bounds[2]),
-            shape,
         )
 
     def read_small(self, i, j, radius=0):

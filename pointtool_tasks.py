@@ -26,7 +26,12 @@ from .exceptions import (
     TraceCancelled,
 )
 from .line_simplification import smooth
-from .pointtool_raster import check_cancel, prepare_snapshot, validate_budget
+from .pointtool_raster import (
+    check_cancel,
+    cost_cache_key,
+    prepare_snapshot,
+    validate_budget,
+)
 from .pointtool_session import TraceResult
 
 PROFILE_ENABLED = os.environ.get("RASTER_SCRIBE_PROFILE", "0") == "1"
@@ -238,7 +243,7 @@ class TraceTaskController:
         # Unused cache is evicted before any new allocation. On fixed-color
         # changes drop the old cost but retain reusable immutable RGB/mask.
         if snapshot is not None and work.color is not None:
-            if snapshot.cost_key != (True, work.color, "float64/int64/masked-v1"):
+            if snapshot.cost_key != cost_cache_key(True, work.color):
                 snapshot = replace(snapshot, cost=None, cost_key=None)
         self._running = job
         job.cache_generation = self._cache_generation

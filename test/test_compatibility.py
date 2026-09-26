@@ -7,7 +7,7 @@ from qgis.core import (
     QgsRasterLayer,
     QgsVectorLayer,
 )
-from qgis.gui import QgsMapMouseEvent
+from qgis.PyQt import sip
 from qgis.PyQt.QtCore import (
     QCoreApplication,
     QEvent,
@@ -18,7 +18,9 @@ from qgis.PyQt.QtCore import (
 )
 from qgis.PyQt.QtGui import QColor, QKeyEvent, QMouseEvent
 
+from .. import classFactory
 from ..pointtool import TracingModes
+from ..pointtool_tasks import execute_request
 from ..utils import RasterSampler
 from .tracing_fixture import TraceFixture
 from .utilities import wait_until
@@ -64,13 +66,14 @@ class CompatibilityTest(TraceFixture):
             self.plugin.dockwidget.previewColorButton.color(), QColor("#80402010")
         )
 
-    def test_read_byte_raster_as_float(self):
+    def test_read_byte_raster_for_color_sampling(self):
         sampler = RasterSampler(self.raster, self.project)
-        bands, origin, shape = sampler.read_window(7, 10, 1, 15)
-        self.assertEqual(origin, (7, 1))
-        self.assertEqual(shape, (3, 14))
+        bounds, bands, valid = sampler.read_small(8, 2, radius=1)
+        self.assertEqual(bounds, (7, 10, 1, 4))
+        self.assertEqual(valid.shape, (3, 3))
+        self.assertTrue(valid.all())
         for band in bands:
-            self.assertEqual(band.dtype, np.dtype("float32"))
+            self.assertEqual(band.dtype, np.dtype("uint8"))
             self.assertEqual(float(band[1, 1]), 0)
             self.assertEqual(float(band[0, 1]), 255)
 
@@ -107,9 +110,14 @@ class CompatibilityTest(TraceFixture):
         self.assertIsNone(self.tool.rlayer)
 
     def test_trace_known_line(self):
-        path, cost = self.tool.trace_over_image((8, 2), (8, 13))
+        self.accept(8, 2)
+        endpoint = self.tool.resolve_endpoint(self.tool.to_coords(8, 13))
+        request = self.tool.make_request(endpoint)
+        result = execute_request(request.worker_input())
+        self.assertEqual(result.status, "success")
+        path = [(i + result.origin[0], j + result.origin[1]) for i, j in result.path]
         self.assertEqual(path, self.expected_path)
-        self.assertEqual(cost, 0)
+        self.assertEqual(result.cost, 0)
 
     def test_background_trace_and_save(self):
         self.add_anchors()
@@ -157,20 +165,8 @@ class CompatibilityTest(TraceFixture):
         self.assertEqual(self.vector.featureCount(), 1)
 
     def test_mouse_clicks_create_and_finish_line(self):
-        def click(row, column, button):
-            point = self.tool.to_coords(row, column)
-            screen = self.tool.toCanvasCoordinates(point)
-            event = QMouseEvent(
-                QEvent.Type.MouseButtonRelease,
-                QPointF(screen),
-                button,
-                button,
-                Qt.KeyboardModifier.NoModifier,
-            )
-            self.tool.canvasReleaseEvent(QgsMapMouseEvent(self.canvas, event))
-
-        click(8, 2, Qt.MouseButton.LeftButton)
-        click(8, 13, Qt.MouseButton.LeftButton)
+        self.click(8, 2, Qt.MouseButton.LeftButton)
+        self.click(8, 13, Qt.MouseButton.LeftButton)
         wait_until(lambda: not self.tool.tracking_is_active)
         self.assertEqual(self.vector.featureCount(), 0)
         geometry = self.tool.session.geometry
@@ -179,7 +175,7 @@ class CompatibilityTest(TraceFixture):
         self.assertAlmostEqual(
             geometry.length(), 11, delta=2 * self.canvas.mapUnitsPerPixel()
         )
-        click(8, 13, Qt.MouseButton.RightButton)
+        self.click(8, 13, Qt.MouseButton.RightButton)
         self.assertFalse(self.tool.has_active_trace())
         self.assertEqual(self.vector.featureCount(), 1)
         self.assertEqual(
@@ -271,3 +267,20 @@ class CompatibilityTest(TraceFixture):
         self.assertAlmostEqual(vertex.x(), expected.x(), places=6)
         self.assertAlmostEqual(vertex.y(), expected.y(), places=6)
         self.assertAlmostEqual(geometry.length(), 11, places=6)
+
+    def test_repeated_unload_deletes_main_window_actions(self):
+        for cycle in range(3):
+            with self.subTest(cycle=cycle):
+                if cycle:
+                    self.plugin = classFactory(self.iface)
+                    self.plugin.initGui()
+                    self.plugin.run()
+                    self.tools.append(self.plugin.tool_identify)
+                actions = list(self.plugin.actions)
+                self.assertEqual(len(actions), 1)
+                self.assertIs(actions[0].parent(), self.window)
+                self.plugin.unload()
+                self.plugin.unload()  # Repeated unload remains harmless.
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                self.assertTrue(all(sip.isdeleted(action) for action in actions))
+                self.assertEqual(self.plugin.actions, [])

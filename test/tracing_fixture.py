@@ -19,10 +19,32 @@ from qgis.PyQt.QtCore import (
     QSettings,
     Qt,
 )
-from qgis.PyQt.QtGui import QMouseEvent
+from qgis.PyQt.QtGui import QKeyEvent, QMouseEvent
 
 from .. import classFactory
+from ..pointtool_session import TraceResult
+from ..pointtool_tasks import execute_request
 from .utilities import create_rgb_raster, get_qgis_app, wait_until
+
+
+class ControlledTask:
+    """Deliver terminal outcomes explicitly, including success after cancellation."""
+
+    def __init__(self, work, snapshot, callback):
+        self.work, self.snapshot, self.callback = work, snapshot, callback
+        self.outcome = None
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def finish(self, status=None):
+        result = (
+            execute_request(self.work, self.snapshot)
+            if status is None
+            else TraceResult(self.work.request_id, status)
+        )
+        self.callback(self, result)
 
 
 class TraceFixture(unittest.TestCase):
@@ -92,3 +114,16 @@ class TraceFixture(unittest.TestCase):
     def add_anchors(self):
         for row, column in (self.expected_path[0], self.expected_path[-1]):
             self.accept(row, column)
+
+    def control_tasks(self):
+        """Opt into explicit task completion instead of background submission."""
+        submitted = []
+        self.scheduler = self.plugin.task_controller
+        self.scheduler._factory = ControlledTask
+        self.scheduler._submit = submitted.append
+        return submitted
+
+    def key(self, key):
+        self.tool.keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+        )

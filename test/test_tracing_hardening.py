@@ -18,48 +18,20 @@ from qgis.core import (
     QgsRasterLayer,
     QgsVectorLayer,
 )
-from qgis.PyQt.QtCore import QEvent, QPoint, QSettings, Qt
-from qgis.PyQt.QtGui import QColor, QKeyEvent
+from qgis.PyQt.QtCore import QPoint, QSettings, Qt
+from qgis.PyQt.QtGui import QColor
 
 from ..pointtool import TracingModes
 from ..pointtool_session import TraceResult
-from ..pointtool_tasks import FindPathTask, execute_request
+from ..pointtool_tasks import FindPathTask
 from .tracing_fixture import TraceFixture
 from .utilities import create_rgb_raster, wait_until
-
-
-class ControlledTask:
-    """Deliver terminal outcomes explicitly, including success after cancellation."""
-
-    def __init__(self, work, snapshot, callback):
-        self.work, self.snapshot, self.callback = work, snapshot, callback
-        self.outcome = None
-        self.cancelled = False
-
-    def cancel(self):
-        self.cancelled = True
-
-    def finish(self, status=None):
-        result = (
-            execute_request(self.work, self.snapshot)
-            if status is None
-            else TraceResult(self.work.request_id, status)
-        )
-        self.callback(self, result)
 
 
 class TracingHardeningTest(TraceFixture):
     def setUp(self):
         super().setUp()
-        self.submitted = []
-        self.scheduler = self.plugin.task_controller
-        self.scheduler._factory = ControlledTask
-        self.scheduler._submit = self.submitted.append
-
-    def key(self, key):
-        self.tool.keyPressEvent(
-            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
-        )
+        self.submitted = self.control_tasks()
 
     def preview(self, row=8, col=13, start=True):
         endpoint = self.tool.resolve_endpoint(self.tool.to_coords(row, col))

@@ -4,11 +4,9 @@ from unittest.mock import patch
 
 from qgis import utils as qgis_utils
 from qgis.core import QgsCoordinateReferenceSystem, QgsFeature, QgsGeometry
-from qgis.PyQt.QtCore import QEvent, Qt
-from qgis.PyQt.QtGui import QKeyEvent
+from qgis.PyQt.QtCore import Qt
 
 from ..pointtool import TracingModes
-from .test_tracing_hardening import ControlledTask
 from .tracing_fixture import TraceFixture
 
 
@@ -16,11 +14,6 @@ class LineUndoTest(TraceFixture):
     def setUp(self):
         super().setUp()
         self.tool.tracing_mode = TracingModes.LINE
-
-    def key(self, key):
-        self.tool.keyPressEvent(
-            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
-        )
 
     def trace(self, points=((999, 1990), (1010, 1990), (1021, 1990))):
         count = self.vector.featureCount()
@@ -59,13 +52,6 @@ class LineUndoTest(TraceFixture):
         self.assertTrue(self.vector.addFeature(feature))
         self.vector.endEditCommand()
         return feature
-
-    def control_tasks(self):
-        submitted = []
-        scheduler = self.plugin.task_controller
-        scheduler._factory = ControlledTask
-        scheduler._submit = submitted.append
-        return submitted
 
     def test_finish_publishes_one_feature_with_whole_line_undo_redo(self):
         expected = self.trace()

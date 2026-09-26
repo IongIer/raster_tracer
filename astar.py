@@ -16,10 +16,6 @@ class FindPathCoreResult:
     profile_stats: object = None
     status: str = "no_path"
 
-    @property
-    def cancelled(self):
-        return self.status == "cancelled"
-
 
 def get_neighbors(height, width, point):
     i, j = point
@@ -114,8 +110,3 @@ def _find_path_core(
             distance = abs(goal[0] - neighbor[0]) + abs(goal[1] - neighbor[1])
             heapq.heappush(frontier, (candidate, distance, next(sequence), neighbor))
     return finish("no_path")
-
-
-def FindPathFunction(graph, start, goal):
-    result = _find_path_core(graph, start, goal)
-    return result.path, result.cost

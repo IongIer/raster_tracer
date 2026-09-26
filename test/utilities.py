@@ -70,12 +70,49 @@ def create_rgb_raster(path):
 
     pixels = np.full((16, 16), 255, dtype=np.uint8)
     pixels[8, 2:14] = 0
-    dataset = gdal.GetDriverByName("GTiff").Create(str(path), 16, 16, 3, gdal.GDT_Byte)
-    dataset.SetGeoTransform((1000, 1, 0, 2000, 0, -1))
     crs = osr.SpatialReference()
     crs.ImportFromEPSG(3857)
-    dataset.SetProjection(crs.ExportToWkt())
-    for band in range(1, 4):
-        dataset.GetRasterBand(band).WriteArray(pixels)
-    dataset.FlushCache()
-    dataset = None
+    write_raster(
+        path,
+        (pixels,) * 3,
+        gdal.GDT_Byte,
+        geotransform=(1000, 1, 0, 2000, 0, -1),
+        projection=crs.ExportToWkt(),
+    )
+
+
+def write_raster(
+    path,
+    bands,
+    data_type,
+    *,
+    nodata=None,
+    mask=None,
+    geotransform=None,
+    projection=None,
+):
+    """Write a GeoTIFF and release it before readers open it."""
+    from osgeo import gdal
+
+    height, width = bands[0].shape
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(path), width, height, len(bands), data_type
+    )
+    try:
+        dataset.SetGeoTransform(
+            geotransform if geotransform is not None else (0, 1, 0, height, 0, -1)
+        )
+        if projection is not None:
+            dataset.SetProjection(projection)
+        for number, values in enumerate(bands, 1):
+            band = dataset.GetRasterBand(number)
+            band.WriteArray(values)
+            if nodata is not None:
+                band.SetNoDataValue(nodata)
+        if mask is not None:
+            dataset.CreateMaskBand(gdal.GMF_PER_DATASET)
+            dataset.GetRasterBand(1).GetMaskBand().WriteArray(mask)
+        dataset.FlushCache()
+    finally:
+        band = None
+        dataset = None

@@ -15,8 +15,8 @@ from .. import pointtool_raster as raster
 from ..exceptions import InvalidRasterError, ResourceLimitError, TraceCancelled
 from ..pointtool_session import RasterSourceSpec, TraceResult, WorkerRequest
 from ..pointtool_tasks import FindPathTask, execute_request
-from .tracing_fixture import TraceFixture
-from .utilities import get_qgis_app
+from .tracing_fixture import ControlledTask, TraceFixture
+from .utilities import get_qgis_app, write_raster
 
 
 class CacheOptimizationTest(unittest.TestCase):
@@ -34,16 +34,7 @@ class CacheOptimizationTest(unittest.TestCase):
     def source(self, values, nodata=None):
         path = Path(self.directory.name) / "cache.tif"
         height, width = values.shape
-        dataset = gdal.GetDriverByName("GTiff").Create(
-            str(path), width, height, 3, gdal.GDT_Float64
-        )
-        dataset.SetGeoTransform((0, 1, 0, height, 0, -1))
-        for number in (1, 2, 3):
-            band = dataset.GetRasterBand(number)
-            band.WriteArray(values)
-            if nodata is not None:
-                band.SetNoDataValue(nodata)
-        dataset = None
+        write_raster(path, (values,) * 3, gdal.GDT_Float64, nodata=nodata)
         return RasterSourceSpec(str(path), height, width, 1)
 
     def work(self, source, bounds=(33, 53, 35, 58), color=(0, 0, 0)):
@@ -326,14 +317,6 @@ class CacheCancellationTest(TraceFixture):
         self.assertFalse(controller.active)
 
     def test_late_cache_kept_only_without_explicit_eviction(self):
-        class ControlledTask:
-            def __init__(self, work, snapshot, callback):
-                self.work, self.snapshot, self.callback = work, snapshot, callback
-                self.outcome = None
-
-            def cancel(self):
-                pass
-
         controller = self.plugin.task_controller
         controller._factory = ControlledTask
         controller._submit = lambda task: None
