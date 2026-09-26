@@ -24,9 +24,10 @@ from qgis.core import (
     QgsVertexId,
 )
 from qgis.gui import QgsMapToolEdit, QgsRubberBand, QgsVertexMarker
-from qgis.PyQt.QtCore import QCoreApplication, QPoint, Qt
+from qgis.PyQt.QtCore import QCoreApplication, QPoint, Qt, pyqtSignal
 from qgis.PyQt.QtGui import QColor
 
+from .controls import SHORTCUT_ACTIONS, shortcut_action
 from .exceptions import OutsideMapError
 from .pointtool_preview import TracePreviewController
 from .pointtool_raster import RasterTracingContext
@@ -43,14 +44,6 @@ from .pointtool_tasks import TraceTaskController
 from .utils import get_coords_from_raster_indxs, get_indxs_from_raster_coords
 
 DENSE_LINE_SPACING = 5.0  # Maximum vertex spacing in vector layer units.
-SHORTCUT_KEYS = {
-    Qt.Key.Key_A,
-    Qt.Key.Key_B,
-    Qt.Key.Key_S,
-    Qt.Key.Key_Escape,
-    Qt.Key.Key_T,
-    Qt.Key.Key_D,
-}
 
 
 class TracingModes(Enum):
@@ -101,6 +94,8 @@ def truncate_path_points(existing, count):
 
 
 class RasterScribePointTool(QgsMapToolEdit):
+    attributes_requested = pyqtSignal(object, object)
+
     def __init__(
         self,
         canvas,
@@ -119,6 +114,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         self.suspended = True
         self._own_edit = False
         self._finishing = False
+        self.open_attributes_on_finish = False
         self._connections = []
         self._raster_connections = []
         self._target_connections = []
@@ -271,7 +267,7 @@ class RasterScribePointTool(QgsMapToolEdit):
         self._context = None
         self._disconnect(self._target_connections)
 
-    def finish_session(self, *args):
+    def finish_session(self, *args, open_attributes=False):
         """Publish the completed draft in one short, independently undoable edit."""
         if self._finishing:
             return False
@@ -302,7 +298,6 @@ class RasterScribePointTool(QgsMapToolEdit):
                 command_open = False
             self._reset_session()
             layer.triggerRepaint()
-            return True
         except Exception as error:
             if command_open:
                 with self._editing():
@@ -311,6 +306,11 @@ class RasterScribePointTool(QgsMapToolEdit):
             return False
         finally:
             self._finishing = False
+        # Notify only after the draft and undo command have both been closed.
+        # Lifecycle callers (save, tool/layer changes, shutdown) never request UI.
+        if open_attributes:
+            self.attributes_requested.emit(layer, feature.id())
+        return True
 
     def _discard_session(self, *args):
         self._reset_session()
@@ -833,17 +833,23 @@ class RasterScribePointTool(QgsMapToolEdit):
     def keyPressEvent(self, event):
         if self.disposed or self.suspended:
             return
-        key = event.key()
-        if key == Qt.Key.Key_B:
+        action = shortcut_action(event)
+        if action is None:
+            return
+        if action == "undo_segment":
             self.remove_last_anchor_point()
-        elif key == Qt.Key.Key_Escape:
+        elif action == "cancel_pending":
             self._cancel_inflight_segment()
-        elif key in (Qt.Key.Key_A, Qt.Key.Key_D):
-            mode = TracingModes.LINE if key == Qt.Key.Key_A else TracingModes.DENSE_LINE
+        elif action in ("toggle_straight", "toggle_dense_straight"):
+            mode = (
+                TracingModes.LINE
+                if action == "toggle_straight"
+                else TracingModes.DENSE_LINE
+            )
             self.tracing_mode = TracingModes.PATH if self.tracing_mode == mode else mode
-        elif key == Qt.Key.Key_S:
+        elif action == "toggle_color_snap":
             self.turn_off_snap()
-        elif key == Qt.Key.Key_T:
+        elif action == "sample_color":
             self._handle_trace_color_shortcut()
         self.update_rubber_band()
 
@@ -868,7 +874,7 @@ class RasterScribePointTool(QgsMapToolEdit):
             self.report_failure("invalid_input", str(error))
 
     def handled_shortcut_keys(self):
-        return SHORTCUT_KEYS
+        return SHORTCUT_ACTIONS.keys()
 
     def has_active_trace(self):
         return not self.disposed and not self.suspended and bool(self.session.anchors)
@@ -877,7 +883,10 @@ class RasterScribePointTool(QgsMapToolEdit):
         if self.disposed or self.suspended:
             return
         if event.button() == Qt.MouseButton.RightButton:
-            self.finish_session()
+            invert = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            self.finish_session(
+                open_attributes=self.open_attributes_on_finish != invert
+            )
         elif event.button() == Qt.MouseButton.LeftButton:
             self.accept_click(self.toMapCoordinates(event.pos()), event.pos())
 

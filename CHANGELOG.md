@@ -7,7 +7,7 @@ Changes from [Raster Tracer 0.3.3](https://github.com/mkondratyev85/raster_trace
 ### Tracing
 
 - Show a path preview before clicking, with adjustable color and width.
-- Save color, snapping, smoothing, and preview preferences.
+- Save color, snapping, smoothing, preview, and finish-form preferences.
 - Add `T` to sample the color under the pointer and `D` for dense straight lines.
 - Make the drawn line match the preview, including smoothing and snapping.
 - Optimize tracing and snapping, and reduce memory use on large rasters and
@@ -26,3 +26,10 @@ Changes from [Raster Tracer 0.3.3](https://github.com/mkondratyev85/raster_trace
 - Allow installation alongside Raster Tracer, with separate preferences.
 - Name the fork Raster Scribe and give it a blue icon.
 - Place the plugin under the **Raster** menu.
+- Add a controls reference and require unmodified letter keys for tracing actions.
+- Optionally open the finished line's attribute form, with Shift+right-click
+  reversing the saved choice once.
+- Add fields to a layer from the feature form while preserving unfinished input.
+- Create a temporary editable line layer using the selected raster's CRS.
+- Add a Start tracing button in the panel, enabled when a suitable raster and
+  editable line layer are selected.

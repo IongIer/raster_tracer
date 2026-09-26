@@ -27,6 +27,8 @@ import os
 from qgis.PyQt import QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal
 
+from .controls import create_controls_dialog
+
 FORM_CLASS, _ = uic.loadUiType(
     os.path.join(os.path.dirname(__file__), "raster_scribe_dockwidget_base.ui")
 )
@@ -45,10 +47,22 @@ class RasterScribeDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # #widgets-and-dialogs-with-auto-connect
         self.setupUi(self)
         self.can_close = None
+        self.controls_dialog = None
+        self.controlsButton.clicked.connect(self.show_controls)
+
+    def show_controls(self):
+        """Keep one reference window so it can stay beside the map canvas."""
+        if self.controls_dialog is None:
+            self.controls_dialog = create_controls_dialog(self)
+        self.controls_dialog.show()
+        self.controls_dialog.raise_()
+        self.controls_dialog.activateWindow()
 
     def closeEvent(self, event):
         if self.can_close is not None and not self.can_close():
             event.ignore()
             return
+        if self.controls_dialog is not None:
+            self.controls_dialog.close()
         self.closingPlugin.emit()
         event.accept()

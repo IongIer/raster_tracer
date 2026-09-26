@@ -16,7 +16,33 @@
   <widget class="QWidget" name="dockWidgetContents">
    <layout class="QGridLayout" name="gridLayout">
 
-    <item row="7" column="0">
+    <item row="3" column="0" colspan="2">
+     <widget class="QPushButton" name="createScratchLayerButton">
+      <property name="enabled"><bool>false</bool></property>
+      <property name="text"><string>Create scratch layer</string></property>
+      <property name="toolTip"><string>Create an editable temporary line layer using the selected raster's CRS. Use Make Permanent in QGIS to save it to disk.</string></property>
+     </widget>
+    </item>
+    <item row="4" column="0" colspan="2">
+     <widget class="QPushButton" name="startTracingButton">
+      <property name="enabled"><bool>false</bool></property>
+      <property name="text"><string>Start tracing</string></property>
+      <property name="toolTip"><string>Choose a supported RGB raster and select an editable MultiLineString or MultiCurve layer.</string></property>
+     </widget>
+    </item>
+    <item row="11" column="0" colspan="2">
+     <widget class="QCheckBox" name="checkBoxOpenAttributes">
+      <property name="text"><string>Open attributes after finishing</string></property>
+      <property name="toolTip"><string>Open the finished line's form after right-clicking. Shift+right-click reverses this setting for one line.</string></property>
+     </widget>
+    </item>
+    <item row="12" column="0" colspan="2">
+     <widget class="QPushButton" name="controlsButton">
+      <property name="text"><string>Controls…</string></property>
+     </widget>
+    </item>
+
+    <item row="8" column="0">
      <widget class="QCheckBox" name="checkBoxSnap2">
       <property name="enabled">
        <bool>true</bool>
@@ -26,7 +52,7 @@
       </property>
      </widget>
     </item>
-    <item row="7" column="1">
+    <item row="8" column="1">
      <widget class="QgsSpinBox" name="SpinBoxSnap">
       <property name="enabled">
        <bool>false</bool>
@@ -40,7 +66,7 @@
      </widget>
     </item>
 
-    <item row="5" column="0">
+    <item row="6" column="0">
      <widget class="QCheckBox" name="checkBoxSnap">
       <property name="enabled">
        <bool>false</bool>
@@ -50,14 +76,14 @@
       </property>
      </widget>
     </item>
-    <item row="3" column="0">
+    <item row="5" column="0">
      <widget class="QCheckBox" name="checkBoxColor">
       <property name="text">
        <string>Trace color</string>
       </property>
      </widget>
     </item>
-    <item row="3" column="1">
+    <item row="5" column="1">
      <widget class="QgsColorButton" name="mColorButton">
       <property name="enabled">
        <bool>false</bool>
@@ -81,7 +107,7 @@
     <item row="2" column="1">
      <widget class="QgsMapLayerComboBox" name="mMapLayerComboBox"/>
     </item>
-    <item row="5" column="1">
+    <item row="6" column="1">
      <widget class="QgsSpinBox" name="mQgsSpinBox">
       <property name="enabled">
        <bool>false</bool>
@@ -94,14 +120,14 @@
       </property>
      </widget>
     </item>
-    <item row="6" column="0">
+    <item row="7" column="0">
      <widget class="QCheckBox" name="checkBoxSmooth">
       <property name="text">
        <string>Smooth lines</string>
       </property>
      </widget>
     </item>
-    <item row="8" column="0">
+    <item row="9" column="0">
      <widget class="QCheckBox" name="checkBoxPreview">
       <property name="text">
        <string>Preview path</string>
@@ -111,7 +137,7 @@
       </property>
      </widget>
     </item>
-    <item row="8" column="1">
+    <item row="9" column="1">
      <widget class="QgsColorButton" name="previewColorButton">
       <property name="text">
        <string/>
@@ -125,14 +151,14 @@
       </property>
      </widget>
     </item>
-    <item row="9" column="0">
+    <item row="10" column="0">
      <widget class="QLabel" name="previewWidthLabel">
       <property name="text">
        <string>Preview width</string>
       </property>
      </widget>
     </item>
-    <item row="9" column="1">
+    <item row="10" column="1">
      <widget class="QDoubleSpinBox" name="previewWidthSpinBox">
       <property name="minimum">
        <double>0.100000000000000</double>

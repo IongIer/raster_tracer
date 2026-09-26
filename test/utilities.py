@@ -15,7 +15,7 @@ IFACE = None
 
 def get_qgis_app():
     """Start QGIS once; missing QGIS is a test failure, never a silent skip."""
-    from qgis.gui import QgsMapCanvas, QgsMapToolPan
+    from qgis.gui import QgsGui, QgsMapCanvas, QgsMapToolPan
     from qgis.PyQt.QtWidgets import QMainWindow
     from qgis.testing import start_app
 
@@ -24,6 +24,7 @@ def get_qgis_app():
     global QGIS_APP, CANVAS, PARENT, IFACE
     if QGIS_APP is None:
         QGIS_APP = start_app()
+        QgsGui.editorWidgetRegistry().initEditors()
         PARENT = QMainWindow()
         CANVAS = QgsMapCanvas(PARENT)
         CANVAS.resize(400, 400)

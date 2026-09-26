@@ -25,7 +25,14 @@
 import math
 import os.path
 
-from qgis.core import Qgis
+from qgis.core import (
+    Qgis,
+    QgsFields,
+    QgsMemoryProviderUtils,
+    QgsProject,
+    QgsRasterLayer,
+    QgsVectorLayer,
+)
 from qgis.PyQt.QtCore import (
     QCoreApplication,
     QEvent,
@@ -40,6 +47,7 @@ from qgis.PyQt.QtWidgets import QAction
 
 # Initialize Qt resources from file resources.py
 from . import resources  # noqa: F401 - Registers the plugin's Qt resources.
+from .attribute_form import show_finished_feature_form
 from .pointtool import RasterScribePointTool
 from .pointtool_tasks import TraceTaskController
 
@@ -108,6 +116,8 @@ class RasterScribe:
         self.task_controller = TraceTaskController()
         self.tool_identify = None
         self._connections = []
+        self._scratch_connections = []
+        self._start_layer_connections = []
         self._unloaded = False
 
     def _coerce_spin_box_int(self, candidate_value, spin_box):
@@ -165,6 +175,8 @@ class RasterScribe:
             return False
         self.pluginIsActive = False
         RasterScribePointTool._disconnect(self._connections)
+        RasterScribePointTool._disconnect(self._scratch_connections)
+        RasterScribePointTool._disconnect(self._start_layer_connections)
         if self.layer_tree_filter is not None:
             self.layer_tree_filter.set_pointtool(None)
             self.iface.layerTreeView().removeEventFilter(self.layer_tree_filter)
@@ -272,6 +284,9 @@ class RasterScribe:
                 settings.value("RasterScribe/snap2/tolerance"), dock.SpinBoxSnap
             ),
             "smooth": boolean("RasterScribe/trace/smooth", True),
+            "open_attributes": boolean(
+                "RasterScribe/attributes/open_after_finish", False
+            ),
         }
 
     def _restore_preferences(self, prefs):
@@ -287,6 +302,7 @@ class RasterScribe:
             (dock.checkBoxSnap2, "setChecked", prefs["snap2"]),
             (dock.SpinBoxSnap, "setValue", prefs["snap2_value"]),
             (dock.checkBoxSmooth, "setChecked", prefs["smooth"]),
+            (dock.checkBoxOpenAttributes, "setChecked", prefs["open_attributes"]),
         )
         for widget, method, value in updates:
             with QSignalBlocker(widget):
@@ -295,6 +311,7 @@ class RasterScribe:
         self.checkBoxSnap2_changed()
         self.checkBoxSmooth_changed()
         self.checkBoxColor_changed()
+        self.open_attributes_changed()
         self.preview_enabled_changed()
         self.preview_color_changed(dock.previewColorButton.color())
         self.preview_width_changed(dock.previewWidthSpinBox.value())
@@ -322,12 +339,19 @@ class RasterScribe:
             (dock.checkBoxPreview.stateChanged, self.preview_enabled_changed),
             (dock.previewColorButton.colorChanged, self.preview_color_changed),
             (dock.previewWidthSpinBox.valueChanged, self.preview_width_changed),
+            (dock.checkBoxOpenAttributes.toggled, self.open_attributes_changed),
+            (dock.createScratchLayerButton.clicked, self.create_scratch_layer),
+            (dock.startTracingButton.clicked, self.start_tracing),
+            (self.tool_identify.attributes_requested, self.open_finished_attributes),
+            (self.tool_identify.activated, self.update_start_button),
+            (self.iface.layerTreeView().currentLayerChanged, self.start_target_changed),
         )
         for signal, callback in connections:
             signal.connect(callback)
             self._connections.append((signal, callback))
         self.layer_tree_filter = LayerTreeShortcutFilter(self.tool_identify)
         self.iface.layerTreeView().installEventFilter(self.layer_tree_filter)
+        self.start_target_changed()
 
     def run(self):
         if self._unloaded:
@@ -343,10 +367,157 @@ class RasterScribe:
         self.activate_map_tool()
 
     def raster_layer_changed(self):
-        self.tool_identify.raster_layer_has_changed(
-            self.dockwidget.mMapLayerComboBox.currentLayer()
-        )
+        RasterScribePointTool._disconnect(self._scratch_connections)
+        raster = self.dockwidget.mMapLayerComboBox.currentLayer()
+        self.tool_identify.raster_layer_has_changed(raster)
+        if raster is not None:
+            for signal in ("crsChanged", "isValidChanged", "dataChanged"):
+                RasterScribePointTool._connect(
+                    raster,
+                    signal,
+                    self.update_scratch_button,
+                    self._scratch_connections,
+                )
+        self.update_scratch_button()
         self.checkBoxColor_changed()
+
+    def start_target_changed(self, *args):
+        RasterScribePointTool._disconnect(self._start_layer_connections)
+        layer = self.iface.activeLayer()
+        if isinstance(layer, QgsVectorLayer):
+            for signal in (
+                "editingStarted",
+                "editingStopped",
+                "isValidChanged",
+                "dataSourceChanged",
+            ):
+                RasterScribePointTool._connect(
+                    layer,
+                    signal,
+                    self.update_start_button,
+                    self._start_layer_connections,
+                )
+        self.update_start_button()
+
+    def tracing_unavailable_reason(self):
+        raster = self.dockwidget.mMapLayerComboBox.currentLayer()
+        if (
+            not isinstance(raster, QgsRasterLayer)
+            or not raster.isValid()
+            or raster is not self.tool_identify.rlayer
+            or self.tool_identify.raster_context.raster_sampler is None
+        ):
+            return self.tr("Choose a supported RGB raster under Layer to trace.")
+        layer = self.tool_identify.get_current_vector_layer()
+        if layer is None:
+            return self.tr(
+                "Select a MultiLineString or MultiCurve layer in the Layers panel."
+            )
+        if not layer.isEditable():
+            return self.tr("Enable editing on the selected line layer.")
+        if (
+            not layer.dataProvider().capabilities()
+            & Qgis.VectorProviderCapability.AddFeatures
+        ):
+            return self.tr("The selected line layer does not support adding features.")
+        return ""
+
+    def update_start_button(self, *args):
+        reason = self.tracing_unavailable_reason()
+        button = self.dockwidget.startTracingButton
+        button.setEnabled(not reason)
+        button.setToolTip(
+            reason or self.tr("Activate raster tracing on the selected line layer.")
+        )
+
+    def start_tracing(self):
+        self.update_start_button()
+        if not self.dockwidget.startTracingButton.isEnabled():
+            return
+        self.activate_map_tool()
+        self.map_canvas.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def open_attributes_changed(self):
+        enabled = self.dockwidget.checkBoxOpenAttributes.isChecked()
+        self.tool_identify.open_attributes_on_finish = enabled
+        QSettings().setValue("RasterScribe/attributes/open_after_finish", enabled)
+
+    def open_finished_attributes(self, layer, feature_id):
+        try:
+            show_finished_feature_form(self.iface, layer, feature_id)
+        except Exception as error:
+            self.iface.messageBar().pushMessage(
+                self.tr("Raster Scribe"),
+                self.tr(
+                    "The line was created, but its attribute form could not open: {}"
+                ).format(error),
+                level=Qgis.MessageLevel.Warning,
+            )
+        finally:
+            if self.pluginIsActive and self.map_canvas.mapTool() is self.tool_identify:
+                self.map_canvas.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _scratch_raster(self):
+        raster = self.dockwidget.mMapLayerComboBox.currentLayer()
+        if (
+            isinstance(raster, QgsRasterLayer)
+            and raster.isValid()
+            and raster.crs().isValid()
+            and self.tool_identify.rlayer is raster
+            and self.tool_identify.raster_context.raster_sampler is not None
+        ):
+            return raster
+        return None
+
+    def update_scratch_button(self, *args):
+        button = self.dockwidget.createScratchLayerButton
+        enabled = self._scratch_raster() is not None
+        button.setEnabled(enabled)
+        button.setToolTip(
+            self.tr(
+                "Create an editable temporary line layer using the selected raster's "
+                "CRS. Use Make Permanent in QGIS to save it to disk."
+            )
+            if enabled
+            else self.tr("Select a valid RGB raster with a defined CRS first.")
+        )
+        self.update_start_button()
+
+    def create_scratch_layer(self):
+        raster = self._scratch_raster()
+        if raster is None or not self.tool_identify.finish_session():
+            return None
+        project = QgsProject.instance()
+        base_name = self.tr("{} — traces").format(raster.name())
+        name, suffix = base_name, 2
+        while project.mapLayersByName(name):
+            name = "{} ({})".format(base_name, suffix)
+            suffix += 1
+        layer = QgsMemoryProviderUtils.createMemoryLayer(
+            name, QgsFields(), Qgis.WkbType.MultiLineString, raster.crs()
+        )
+        if layer is None or not layer.isValid() or not layer.startEditing():
+            if layer is not None:
+                layer.deleteLater()
+            self.iface.messageBar().pushMessage(
+                self.tr("Raster Scribe"),
+                self.tr("Could not create an editable scratch layer."),
+                level=Qgis.MessageLevel.Warning,
+            )
+            return None
+        project.addMapLayer(layer)
+        self.iface.setActiveLayer(layer)
+        self.activate_map_tool()
+        self.map_canvas.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.iface.messageBar().pushMessage(
+            self.tr("Raster Scribe"),
+            self.tr(
+                "Created a temporary scratch layer. Use Make Permanent in the "
+                "layer's menu to save it to disk."
+            ),
+            level=Qgis.MessageLevel.Info,
+        )
+        return layer
 
     def checkBoxSmooth_changed(self):
         is_checked = self.dockwidget.checkBoxSmooth.isChecked() is True

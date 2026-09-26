@@ -13,8 +13,10 @@ developed by Mikhail Kondratyev. The fork is maintained by
 
 - Live path previews, with adjustable color and width.
 - Trace large rasters without loading the whole image into memory.
-- Saved color, snapping, smoothing, and preview preferences.
+- Saved color, snapping, smoothing, preview, and finish-form preferences.
 - Shortcuts for sampling a color and drawing a straight line with extra vertices.
+- A controls reference and an optional attribute form after finishing each line.
+- Add fields from the attribute form, and create a scratch line layer for a raster.
 - Cancel pending traces or undo the last segment while keeping earlier work.
 - Support for QGIS 3.40+ and QGIS 4, using the same package.
 
@@ -41,11 +43,17 @@ its own preferences. Saved vector layers need no conversion.
 
 ## Use
 
-Load an RGB raster and a MultiLineString or MultiCurve vector layer. Select
-the vector layer in the Layers panel and click **Toggle Editing** (the pencil).
-Activate Raster Scribe, then choose the raster under **Layer to trace**.
+Load an RGB raster, activate Raster Scribe, and choose it under **Layer to
+trace**. Click **Create scratch layer** to start with a temporary line layer,
+or select an existing MultiLineString or MultiCurve vector layer and click
+**Toggle Editing** (the pencil), then **Start tracing** in the plugin panel.
 Click a starting point, move along the line to see the preview, and click to
 add a segment. Right-click to finish, then click **Save Layer Edits** in QGIS.
+
+Enable **Open attributes after finishing** to enter values after each line;
+Shift+right-click reverses that choice for one line. Use **Add field to layer…**
+in the form if a field is missing. Scratch layers are temporary: use QGIS's
+**Make Permanent** action to keep their data after closing the project.
 
 [Trace your first line](documentation/usage.md#trace-your-first-line) using the
 small example included in this repository. The guide also covers
